@@ -87,7 +87,7 @@ describe('fetchSource', () => {
             selector: '#copy-page',
           },
         ],
-        clipboardTimeoutMs: 5_000,
+        clipboardTimeoutMs: 1_500,
       },
       normalize: {
         prependSourceComment: true,
@@ -466,16 +466,16 @@ describe('fetchSource', () => {
     }
   });
 
-  it('waits for delayed clipboard handlers before clicking copy controls', async () => {
+  it('retries clipboard copies after an initial no-op interaction', async () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const clipboardSpec = parseSourceSpecObject({
-      id: 'clipboard-delayed-source',
-      label: 'Clipboard Delayed Source',
-      startUrls: [`${server.baseUrl}/clipboard-delayed/start`],
+      id: 'clipboard-retry-source',
+      label: 'Clipboard Retry Source',
+      startUrls: [`${server.baseUrl}/clipboard-retry/start`],
       allowedHosts: ['127.0.0.1'],
       discovery: {
-        include: [`${server.baseUrl}/clipboard-delayed/**`],
+        include: [`${server.baseUrl}/clipboard-retry/**`],
         exclude: [],
         maxPages: 10,
       },
@@ -504,7 +504,7 @@ describe('fetchSource', () => {
       expect(result.pageCount).toBe(1);
       expect(
         catalog.search({
-          query: 'clipboard handler attaches after hydration',
+          query: 'clipboard copy succeeds after the first interaction does nothing',
           sourceIds: [clipboardSpec.id],
         }),
       ).toHaveLength(1);
@@ -514,16 +514,16 @@ describe('fetchSource', () => {
     }
   });
 
-  it('retries multi-step clipboard menus when the initial action hydrates late', async () => {
+  it('retries multi-step clipboard menus when the first sequence leaves the menu closed', async () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const clipboardSpec = parseSourceSpecObject({
-      id: 'clipboard-delayed-menu-source',
-      label: 'Clipboard Delayed Menu Source',
-      startUrls: [`${server.baseUrl}/clipboard-delayed-menu/start`],
+      id: 'clipboard-retry-menu-source',
+      label: 'Clipboard Retry Menu Source',
+      startUrls: [`${server.baseUrl}/clipboard-retry-menu/start`],
       allowedHosts: ['127.0.0.1'],
       discovery: {
-        include: [`${server.baseUrl}/clipboard-delayed-menu/**`],
+        include: [`${server.baseUrl}/clipboard-retry-menu/**`],
         exclude: [],
         maxPages: 10,
       },
@@ -537,9 +537,10 @@ describe('fetchSource', () => {
           {
             action: 'click',
             selector: '#copy-markdown',
+            timeoutMs: 250,
           },
         ],
-        clipboardTimeoutMs: 5_000,
+        clipboardTimeoutMs: 2_000,
       },
       normalize: {
         prependSourceComment: true,
@@ -556,7 +557,7 @@ describe('fetchSource', () => {
       expect(result.pageCount).toBe(1);
       expect(
         catalog.search({
-          query: 'follow-up copy control appears after a delayed menu action',
+          query: 'follow-up copy control appears after the first full menu sequence fails',
           sourceIds: [clipboardSpec.id],
         }),
       ).toHaveLength(1);
@@ -564,7 +565,7 @@ describe('fetchSource', () => {
       await server.close();
       catalog.close();
     }
-  }, 10_000);
+  }, 5_000);
 
   it('honors longer interaction timeouts when controls become visible slowly', async () => {
     const server = await startDocsServer();
@@ -585,10 +586,10 @@ describe('fetchSource', () => {
           {
             action: 'click',
             selector: '#copy-page',
-            timeoutMs: 2_500,
+            timeoutMs: 1_500,
           },
         ],
-        clipboardTimeoutMs: 5_000,
+        clipboardTimeoutMs: 3_000,
       },
       normalize: {
         prependSourceComment: true,
@@ -613,5 +614,5 @@ describe('fetchSource', () => {
       await server.close();
       catalog.close();
     }
-  }, 10_000);
+  }, 7_000);
 });
