@@ -1,0 +1,26 @@
+id: lighter
+label: Lighter Docs
+startUrls:
+  - https://apidocs.lighter.xyz/docs/get-started
+  - https://apidocs.lighter.xyz/reference/status
+allowedHosts:
+  - apidocs.lighter.xyz
+discovery:
+  include:
+    - https://apidocs.lighter.xyz/docs/**
+    - https://apidocs.lighter.xyz/reference/**
+  exclude: []
+  maxPages: 800
+extract:
+  strategy: clipboardButton
+  interactions:
+    - action: press
+      key: Escape
+    - action: click
+      selector: 'button:has-text("Ask AI")'
+    - action: click
+      selector: 'div[role="button"]:has-text("Copy Markdown")'
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24

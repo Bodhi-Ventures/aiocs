@@ -1,0 +1,10 @@
+.codex-artifacts/
+resources/
+node_modules/
+dist/
+coverage/
+.playwright/
+tmp/
+*.db
+*.db-shm
+*.db-wal

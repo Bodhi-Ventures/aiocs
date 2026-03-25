@@ -1,0 +1,20 @@
+id: hyperliquid
+label: Hyperliquid Docs
+startUrls:
+  - https://hyperliquid.gitbook.io/hyperliquid-docs
+allowedHosts:
+  - hyperliquid.gitbook.io
+discovery:
+  include:
+    - https://hyperliquid.gitbook.io/hyperliquid-docs**
+  exclude: []
+  maxPages: 500
+extract:
+  strategy: clipboardButton
+  interactions:
+    - action: click
+      selector: button[aria-label="Copy page"]
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24

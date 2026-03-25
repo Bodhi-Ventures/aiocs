@@ -1,0 +1,24 @@
+id: synthetix
+label: Synthetix Docs
+startUrls:
+  - https://developers.synthetix.io/
+allowedHosts:
+  - developers.synthetix.io
+discovery:
+  include:
+    - https://developers.synthetix.io/**
+  exclude: []
+  maxPages: 500
+extract:
+  strategy: clipboardButton
+  interactions:
+    - action: press
+      key: Escape
+    - action: click
+      selector: button[aria-haspopup="menu"][data-state="closed"]
+    - action: click
+      selector: div.vocs_AiCtaDropdown_dropdownMenuItem
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24

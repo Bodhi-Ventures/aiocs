@@ -1,0 +1,19 @@
+{
+  "artifacts": [
+    {
+      "description": "Active, completed, and debt planning artifacts for long-running agent work.",
+      "name": "plans",
+      "path": "plans"
+    },
+    {
+      "description": "Durable project documentation such as architecture notes, runbooks, and preserved decisions.",
+      "name": "docs",
+      "path": "docs"
+    },
+    {
+      "description": "Local reference material such as dependency source, copied API docs, and external specs kept outside version control.",
+      "name": "resources",
+      "path": "resources"
+    }
+  ]
+}
