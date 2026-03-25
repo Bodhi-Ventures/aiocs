@@ -10,8 +10,14 @@ discovery:
   exclude: []
   maxPages: 500
 extract:
-  strategy: selector
-  selector: .vocs_Content
+  strategy: clipboardButton
+  interactions:
+    - action: hover
+      selector: .vocs_AiCtaDropdown
+    - action: click
+      selector: .vocs_AiCtaDropdown_buttonRight
+    - action: click
+      selector: '[role="menuitem"]:has-text("Copy")'
 normalize:
   prependSourceComment: true
 schedule:

@@ -10,8 +10,12 @@ discovery:
   exclude: []
   maxPages: 500
 extract:
-  strategy: selector
-  selector: main
+  strategy: clipboardButton
+  interactions:
+    - action: click
+      selector: button[aria-label="More"]
+    - action: click
+      selector: '[role="menuitem"]:has-text("Copy page")'
 normalize:
   prependSourceComment: true
 schedule:

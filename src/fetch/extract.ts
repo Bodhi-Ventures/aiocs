@@ -10,8 +10,21 @@ type ExtractedPage = {
   markdown: string;
 };
 
+const CLIPBOARD_INTERACTION_DEFAULT_TIMEOUT_MS = 1_000;
+
 async function readClipboard(page: Page): Promise<string> {
   return page.evaluate(() => navigator.clipboard.readText());
+}
+
+async function writeClipboard(page: Page, value: string): Promise<boolean> {
+  return page.evaluate(async (nextValue) => {
+    try {
+      await navigator.clipboard.writeText(nextValue);
+      return true;
+    } catch {
+      return false;
+    }
+  }, value);
 }
 
 async function waitForClipboardChange(
@@ -32,14 +45,46 @@ async function waitForClipboardChange(
   throw new Error('Timed out waiting for clipboard content to change');
 }
 
-async function runClipboardStrategy(page: Page, strategy: ExtractStrategy & { strategy: 'clipboardButton' }): Promise<ExtractedPage> {
-  const before = await readClipboard(page).catch(() => '');
-
+async function performClipboardInteractions(
+  page: Page,
+  strategy: ExtractStrategy & { strategy: 'clipboardButton' },
+  deadlineAt: number,
+): Promise<void> {
   for (const interaction of strategy.interactions) {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error('Timed out before clipboard copy controls became ready');
+    }
+
+    if (interaction.action === 'hover') {
+      const locator = page.locator(interaction.selector).first();
+      const interactionTimeout = Math.min(
+        interaction.timeoutMs ?? CLIPBOARD_INTERACTION_DEFAULT_TIMEOUT_MS,
+        remainingMs,
+      );
+      await locator.waitFor({
+        state: 'visible',
+        timeout: interactionTimeout,
+      });
+      await locator.hover({
+        timeout: interactionTimeout,
+      });
+      continue;
+    }
+
     if (interaction.action === 'click') {
       const locator = page.locator(interaction.selector).first();
-      await locator.waitFor({ state: 'visible', timeout: interaction.timeoutMs ?? 10_000 });
-      await locator.click();
+      const interactionTimeout = Math.min(
+        interaction.timeoutMs ?? CLIPBOARD_INTERACTION_DEFAULT_TIMEOUT_MS,
+        remainingMs,
+      );
+      await locator.waitFor({
+        state: 'visible',
+        timeout: interactionTimeout,
+      });
+      await locator.click({
+        timeout: interactionTimeout,
+      });
       continue;
     }
 
@@ -48,10 +93,42 @@ async function runClipboardStrategy(page: Page, strategy: ExtractStrategy & { st
       continue;
     }
 
-    await page.waitForTimeout(interaction.timeoutMs);
+    await page.waitForTimeout(Math.min(interaction.timeoutMs, remainingMs));
+  }
+}
+
+async function runClipboardStrategy(page: Page, strategy: ExtractStrategy & { strategy: 'clipboardButton' }): Promise<ExtractedPage> {
+  const sentinel = `__aiocs_clipboard_marker__${Date.now()}__${Math.random().toString(36).slice(2)}__`;
+  const before = (await writeClipboard(page, sentinel).catch(() => false))
+    ? sentinel
+    : await readClipboard(page).catch(() => '');
+  const deadlineAt = Date.now() + strategy.clipboardTimeoutMs;
+  let lastError: Error | null = null;
+  let markdown: string | null = null;
+
+  while (Date.now() < deadlineAt && !markdown) {
+    try {
+      await performClipboardInteractions(page, strategy, deadlineAt);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    try {
+      markdown = await waitForClipboardChange(page, before, Math.min(400, remainingMs));
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
   }
 
-  const markdown = await waitForClipboardChange(page, before, strategy.clipboardTimeoutMs);
+  if (!markdown) {
+    throw lastError ?? new Error('Timed out waiting for clipboard content to change');
+  }
+
   const title = extractTitleFromMarkdown(markdown) ?? (await page.title());
 
   return {

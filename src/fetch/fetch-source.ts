@@ -20,6 +20,8 @@ type FetchedPage = {
   markdown: string;
 };
 
+type NavigationResponse = Awaited<ReturnType<import('playwright').Page['goto']>>;
+
 function canonicalizeUrl(raw: string): string {
   const url = new URL(raw);
   url.hash = '';
@@ -29,9 +31,20 @@ function canonicalizeUrl(raw: string): string {
   return url.toString();
 }
 
+function getCrawlKey(raw: string): string {
+  const url = new URL(canonicalizeUrl(raw));
+  if (/\.(md|markdown)$/i.test(url.pathname)) {
+    url.pathname = url.pathname.replace(/\.(md|markdown)$/i, '');
+  }
+  return url.toString();
+}
+
 function isAllowed(url: string, allowedHosts: string[], include: string[], exclude: string[]): boolean {
   const parsed = new URL(url);
   if (!allowedHosts.includes(parsed.hostname)) {
+    return false;
+  }
+  if (parsed.pathname.startsWith('/~gitbook/')) {
     return false;
   }
   if (!matchesPatterns(url, include)) {
@@ -49,6 +62,48 @@ function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'page';
+}
+
+function extractTitleFromMarkdown(markdown: string): string | null {
+  for (const line of markdown.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('# ')) {
+      return trimmed.slice(2).trim();
+    }
+  }
+
+  return null;
+}
+
+function deriveTitleFromUrl(url: string): string {
+  const pathname = new URL(url).pathname;
+  const lastSegment = pathname.split('/').filter(Boolean).pop() ?? 'page';
+  return lastSegment
+    .replace(/\.(md|markdown)$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .trim() || 'page';
+}
+
+function isRawMarkdownResponse(url: string, response: NavigationResponse): boolean {
+  if (!response) {
+    return false;
+  }
+
+  const contentType = response.headers()['content-type']?.toLowerCase() ?? '';
+  if (contentType.includes('text/markdown') || contentType.includes('text/x-markdown')) {
+    return true;
+  }
+
+  return contentType.includes('text/plain') && /\.(md|markdown)$/i.test(new URL(url).pathname);
+}
+
+async function extractRawMarkdownPage(url: string, response: Exclude<NavigationResponse, null>): Promise<FetchedPage> {
+  const markdown = (await response.text()).trim();
+  return {
+    url,
+    title: extractTitleFromMarkdown(markdown) ?? deriveTitleFromUrl(url),
+    markdown,
+  };
 }
 
 function persistSnapshotPages(
@@ -84,7 +139,12 @@ export async function fetchSource(input: FetchSourceInput): Promise<{
   }
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    viewport: {
+      width: 1440,
+      height: 1200,
+    },
+  });
   const uniqueOrigins = [...new Set(spec.startUrls.map((url) => new URL(url).origin))];
   for (const origin of uniqueOrigins) {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
@@ -95,16 +155,37 @@ export async function fetchSource(input: FetchSourceInput): Promise<{
 
   const queue = spec.startUrls.map((url) => canonicalizeUrl(url));
   const seen = new Set<string>();
-  const pages: FetchedPage[] = [];
+  const pageOrder: string[] = [];
+  const pagesByCrawlKey = new Map<string, { page: FetchedPage; isRawMarkdown: boolean }>();
+  const pendingRawFallbacks = new Map<string, string>();
 
   try {
-    while (queue.length > 0 && pages.length < spec.discovery.maxPages) {
+    while (queue.length > 0 && pagesByCrawlKey.size < spec.discovery.maxPages) {
       const next = queue.shift();
       if (!next) {
         break;
       }
 
       const url = canonicalizeUrl(next);
+      const crawlKey = getCrawlKey(url);
+      const isRawMarkdownUrl = crawlKey !== url;
+      const existing = pagesByCrawlKey.get(crawlKey);
+
+      if (isRawMarkdownUrl) {
+        if (existing && !existing.isRawMarkdown) {
+          continue;
+        }
+
+        if (!seen.has(crawlKey) && !existing) {
+          pendingRawFallbacks.set(crawlKey, url);
+          const canonicalQueued = queue.some((queuedUrl) => canonicalizeUrl(queuedUrl) === crawlKey);
+          if (!canonicalQueued) {
+            queue.unshift(crawlKey);
+          }
+          continue;
+        }
+      }
+
       if (seen.has(url)) {
         continue;
       }
@@ -114,30 +195,75 @@ export async function fetchSource(input: FetchSourceInput): Promise<{
         continue;
       }
 
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(150);
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+      if (response && response.status() >= 400) {
+        const pendingRawFallback = pendingRawFallbacks.get(crawlKey);
+        if (!isRawMarkdownUrl && pendingRawFallback && !seen.has(pendingRawFallback)) {
+          queue.unshift(pendingRawFallback);
+        }
+        continue;
+      }
 
-      const extracted = await extractPage(page, spec.extract);
-      const markdown = normalizeMarkdown(spec, {
-        title: extracted.title,
-        url,
-        markdown: extracted.markdown,
-      });
+      const rawMarkdownResponse = response && isRawMarkdownResponse(url, response)
+        ? response
+        : null;
+      let fetchedPage: FetchedPage;
 
-      pages.push({
-        url,
-        title: extracted.title,
-        markdown,
-      });
+      try {
+        if (rawMarkdownResponse) {
+          const extracted = await extractRawMarkdownPage(url, rawMarkdownResponse);
+          fetchedPage = {
+            ...extracted,
+            markdown: normalizeMarkdown(spec, extracted),
+          };
+        } else {
+          await page.waitForTimeout(150);
 
-      const links = await discoverLinks(page);
-      for (const link of links) {
-        const canonical = canonicalizeUrl(link);
-        if (!seen.has(canonical) && isAllowed(canonical, spec.allowedHosts, spec.discovery.include, spec.discovery.exclude)) {
-          queue.push(canonical);
+          const extracted = await extractPage(page, spec.extract);
+          fetchedPage = {
+            url,
+            title: extracted.title,
+            markdown: normalizeMarkdown(spec, {
+              title: extracted.title,
+              url,
+              markdown: extracted.markdown,
+            }),
+          };
+        }
+      } catch (error) {
+        const pendingRawFallback = pendingRawFallbacks.get(crawlKey);
+        if (!isRawMarkdownUrl && pendingRawFallback && !seen.has(pendingRawFallback)) {
+          queue.unshift(pendingRawFallback);
+          continue;
+        }
+        throw error;
+      }
+
+      const isRawMarkdown = rawMarkdownResponse !== null;
+      if (!existing) {
+        pageOrder.push(crawlKey);
+        pagesByCrawlKey.set(crawlKey, { page: fetchedPage, isRawMarkdown });
+      } else if (existing.isRawMarkdown && !isRawMarkdown) {
+        pagesByCrawlKey.set(crawlKey, { page: fetchedPage, isRawMarkdown });
+      }
+      if (!isRawMarkdown) {
+        pendingRawFallbacks.delete(crawlKey);
+      }
+
+      if (!rawMarkdownResponse) {
+        const links = await discoverLinks(page);
+        for (const link of links) {
+          const canonical = canonicalizeUrl(link);
+          if (!seen.has(canonical) && isAllowed(canonical, spec.allowedHosts, spec.discovery.include, spec.discovery.exclude)) {
+            queue.push(canonical);
+          }
         }
       }
     }
+
+    const pages = pageOrder
+      .map((crawlKey) => pagesByCrawlKey.get(crawlKey)?.page)
+      .filter((page): page is FetchedPage => page !== undefined);
 
     if (pages.length === 0) {
       throw new Error(`No pages fetched for source '${input.sourceId}'`);

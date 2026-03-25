@@ -8,6 +8,11 @@ const patternSchema = z.string().min(1);
 
 const interactionSchema = z.discriminatedUnion('action', [
   z.object({
+    action: z.literal('hover'),
+    selector: z.string().min(1),
+    timeoutMs: z.number().int().positive().optional(),
+  }),
+  z.object({
     action: z.literal('click'),
     selector: z.string().min(1),
     timeoutMs: z.number().int().positive().optional(),
