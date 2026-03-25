@@ -10,14 +10,8 @@ discovery:
   exclude: []
   maxPages: 500
 extract:
-  strategy: clipboardButton
-  interactions:
-    - action: press
-      key: Escape
-    - action: click
-      selector: button[aria-label="More"]
-    - action: click
-      selector: '[role="menuitem"]'
+  strategy: selector
+  selector: main
 normalize:
   prependSourceComment: true
 schedule:

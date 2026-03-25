@@ -12,14 +12,7 @@ discovery:
   exclude: []
   maxPages: 800
 extract:
-  strategy: clipboardButton
-  interactions:
-    - action: press
-      key: Escape
-    - action: click
-      selector: 'button:has-text("Ask AI")'
-    - action: click
-      selector: 'div[role="button"]:has-text("Copy Markdown")'
+  strategy: readability
 normalize:
   prependSourceComment: true
 schedule:

@@ -10,10 +10,10 @@ Local-only documentation fetch, versioning, and search CLI for AI agents.
 - indexes heading-aware chunks in SQLite FTS5
 - links docs sources to local projects for scoped search
 
-All state is local. By default, data lives under XDG-style paths:
+All state is local. By default, data lives under `~/.aiocs`:
 
-- data: `$XDG_DATA_HOME/aiocs` or `~/.local/share/aiocs`
-- config: `$XDG_CONFIG_HOME/aiocs` or `~/.config/aiocs`
+- data: `~/.aiocs/data`
+- config: `~/.aiocs/config`
 
 For testing or local overrides, set:
 

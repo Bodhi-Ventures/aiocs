@@ -19,8 +19,7 @@ export function getAiocsDataDir(): string {
     return expandTilde(override);
   }
 
-  const xdg = process.env.XDG_DATA_HOME;
-  const target = xdg ? join(xdg, 'aiocs') : join(homedir(), '.local', 'share', 'aiocs');
+  const target = join(homedir(), '.aiocs', 'data');
   mkdirSync(target, { recursive: true });
   return target;
 }
@@ -32,8 +31,7 @@ export function getAiocsConfigDir(): string {
     return expandTilde(override);
   }
 
-  const xdg = process.env.XDG_CONFIG_HOME;
-  const target = xdg ? join(xdg, 'aiocs') : join(homedir(), '.config', 'aiocs');
+  const target = join(homedir(), '.aiocs', 'config');
   mkdirSync(target, { recursive: true });
   return target;
 }

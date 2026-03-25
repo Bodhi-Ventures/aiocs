@@ -10,14 +10,8 @@ discovery:
   exclude: []
   maxPages: 500
 extract:
-  strategy: clipboardButton
-  interactions:
-    - action: press
-      key: Escape
-    - action: click
-      selector: button[aria-haspopup="menu"][data-state="closed"]
-    - action: click
-      selector: div.vocs_AiCtaDropdown_dropdownMenuItem
+  strategy: selector
+  selector: .vocs_Content
 normalize:
   prependSourceComment: true
 schedule:
