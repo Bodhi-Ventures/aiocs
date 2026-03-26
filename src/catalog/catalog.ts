@@ -58,6 +58,7 @@ function initSchema(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL,
       spec_json TEXT NOT NULL,
+      spec_path TEXT,
       config_hash TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -142,6 +143,11 @@ function initSchema(db: Database.Database): void {
       PRIMARY KEY(project_path, source_id)
     );
   `);
+
+  const sourceColumns = db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>;
+  if (!sourceColumns.some((column) => column.name === 'spec_path')) {
+    db.exec('ALTER TABLE sources ADD COLUMN spec_path TEXT');
+  }
 }
 
 function nowIso(): string {
@@ -201,22 +207,33 @@ export function openCatalog(options: OpenCatalogOptions) {
       db.close();
     },
 
-    upsertSource(spec: SourceSpec): { sourceId: string; configHash: string } {
+    upsertSource(
+      spec: SourceSpec,
+      options?: { specPath?: string },
+    ): { sourceId: string; configHash: string; configChanged: boolean } {
       const timestamp = nowIso();
       const configHash = sha256(stableStringify(spec));
       const existing = db
-        .prepare('SELECT id FROM sources WHERE id = ?')
-        .get(spec.id) as { id: string } | undefined;
+        .prepare('SELECT id, created_at, next_due_at, config_hash FROM sources WHERE id = ?')
+        .get(spec.id) as { id: string; created_at: string; next_due_at: string; config_hash: string } | undefined;
+      const resolvedSpecPath = options?.specPath ? resolve(options.specPath) : null;
+      const nextDueAt = !existing
+        ? addHoursIso(spec.schedule.everyHours)
+        : existing.config_hash === configHash
+          ? existing.next_due_at
+          : timestamp;
+      const configChanged = Boolean(existing && existing.config_hash !== configHash);
 
       db.prepare(`
         INSERT INTO sources (
-          id, label, spec_json, config_hash, created_at, updated_at, next_due_at
+          id, label, spec_json, spec_path, config_hash, created_at, updated_at, next_due_at
         ) VALUES (
-          @id, @label, @specJson, @configHash, @createdAt, @updatedAt, @nextDueAt
+          @id, @label, @specJson, @specPath, @configHash, @createdAt, @updatedAt, @nextDueAt
         )
         ON CONFLICT(id) DO UPDATE SET
           label = excluded.label,
           spec_json = excluded.spec_json,
+          spec_path = excluded.spec_path,
           config_hash = excluded.config_hash,
           updated_at = excluded.updated_at,
           next_due_at = excluded.next_due_at
@@ -224,15 +241,17 @@ export function openCatalog(options: OpenCatalogOptions) {
         id: spec.id,
         label: spec.label,
         specJson: JSON.stringify(spec),
+        specPath: resolvedSpecPath,
         configHash,
-        createdAt: existing ? db.prepare('SELECT created_at FROM sources WHERE id = ?').pluck().get(spec.id) : timestamp,
+        createdAt: existing?.created_at ?? timestamp,
         updatedAt: timestamp,
-        nextDueAt: addHoursIso(spec.schedule.everyHours),
+        nextDueAt,
       });
 
       return {
         sourceId: spec.id,
         configHash,
+        configChanged,
       };
     },
 
@@ -462,6 +481,49 @@ export function openCatalog(options: OpenCatalogOptions) {
     },
 
     listProjectLinks,
+
+    removeManagedSources(input: { managedRoots: string[]; activeSources: Array<{ sourceId: string; specPath: string }> }): string[] {
+      if (input.managedRoots.length === 0) {
+        return [];
+      }
+
+      const activeSourceKeys = new Set(
+        input.activeSources.map((source) => `${source.sourceId}::${resolve(source.specPath)}`),
+      );
+      const rows = db.prepare(`
+        SELECT id, spec_path
+        FROM sources
+        WHERE spec_path IS NOT NULL
+        ORDER BY id
+      `).all() as Array<{ id: string; spec_path: string | null }>;
+
+      const toDelete = rows
+        .filter((row) => {
+          if (!row.spec_path) {
+            return false;
+          }
+
+          const normalizedSpecPath = resolve(row.spec_path);
+          return input.managedRoots.some((managedRoot) =>
+            normalizedSpecPath === managedRoot || normalizedSpecPath.startsWith(`${managedRoot}/`),
+          ) && !activeSourceKeys.has(`${row.id}::${normalizedSpecPath}`);
+        })
+        .map((row) => row.id);
+
+      if (toDelete.length === 0) {
+        return [];
+      }
+
+      const deleteStatement = db.prepare('DELETE FROM sources WHERE id = ?');
+      const transaction = db.transaction((sourceIds: string[]) => {
+        for (const sourceId of sourceIds) {
+          deleteStatement.run(sourceId);
+        }
+      });
+      transaction(toDelete);
+
+      return toDelete;
+    },
 
     listSnapshots(sourceId: string): Array<{
       snapshotId: string;

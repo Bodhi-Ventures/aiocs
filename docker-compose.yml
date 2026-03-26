@@ -1,0 +1,12 @@
+services:
+  aiocs-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      AIOCS_DAEMON_INTERVAL_MINUTES: ${AIOCS_DAEMON_INTERVAL_MINUTES:-60}
+      AIOCS_DAEMON_FETCH_ON_START: ${AIOCS_DAEMON_FETCH_ON_START:-true}
+    volumes:
+      - ${HOME}/.aiocs:/root/.aiocs
+      - ./sources:/app/sources:ro

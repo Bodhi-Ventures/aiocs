@@ -1,0 +1,11 @@
+.git
+.codex-artifacts
+dist
+node_modules
+coverage
+.playwright
+tmp
+catalog.sqlite
+*.db
+*.db-shm
+*.db-wal

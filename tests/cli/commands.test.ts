@@ -33,6 +33,18 @@ async function runCli(
   });
 }
 
+function parseJsonEnvelope(stdout: string) {
+  return JSON.parse(stdout) as {
+    ok: boolean;
+    command: string;
+    data?: unknown;
+    error?: {
+      message: string;
+      details?: unknown;
+    };
+  };
+}
+
 describe('CLI commands', () => {
   let root: string;
 
@@ -138,6 +150,188 @@ schedule:
     } finally {
       await server.close();
     }
+    },
+    30_000,
+  );
+
+  it.each(['tsx', 'dist'] as const)(
+    'emits structured JSON envelopes for success paths with %s runtime',
+    async (runtime) => {
+      const server = await startDocsServer();
+      const specPath = join(root, 'selector-source.yaml');
+      const projectPath = join(root, 'workspace', 'trader');
+      const nestedProjectCwd = join(projectPath, 'apps', 'worker');
+      mkdirSync(nestedProjectCwd, { recursive: true });
+
+      writeFileSync(specPath, `
+id: selector-json
+label: Selector JSON
+startUrls:
+  - ${server.baseUrl}/selector/start
+allowedHosts:
+  - 127.0.0.1
+discovery:
+  include:
+    - ${server.baseUrl}/selector/**
+  exclude: []
+  maxPages: 10
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+`);
+
+      const env = {
+        ...process.env,
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      };
+
+      try {
+        const upsert = await runCli(runtime, ['--json', 'source', 'upsert', specPath], { cwd: root, env });
+        expect(upsert.exitCode).toBe(0);
+        expect(parseJsonEnvelope(upsert.stdout)).toMatchObject({
+          ok: true,
+          command: 'source.upsert',
+          data: {
+            sourceId: 'selector-json',
+          },
+        });
+
+        const sourceList = await runCli(runtime, ['--json', 'source', 'list'], { cwd: root, env });
+        expect(sourceList.exitCode).toBe(0);
+        expect(parseJsonEnvelope(sourceList.stdout)).toMatchObject({
+          ok: true,
+          command: 'source.list',
+          data: {
+            sources: [
+              expect.objectContaining({
+                id: 'selector-json',
+                label: 'Selector JSON',
+              }),
+            ],
+          },
+        });
+
+        const fetch = await runCli(runtime, ['--json', 'fetch', 'selector-json'], { cwd: root, env });
+        expect(fetch.exitCode).toBe(0);
+        expect(parseJsonEnvelope(fetch.stdout)).toMatchObject({
+          ok: true,
+          command: 'fetch',
+          data: {
+            results: [
+              expect.objectContaining({
+                sourceId: 'selector-json',
+                pageCount: 2,
+              }),
+            ],
+          },
+        });
+
+        const refresh = await runCli(runtime, ['--json', 'refresh', 'due'], { cwd: root, env });
+        expect(refresh.exitCode).toBe(0);
+        expect(parseJsonEnvelope(refresh.stdout)).toMatchObject({
+          ok: true,
+          command: 'refresh.due',
+          data: {
+            results: [],
+          },
+        });
+
+        const link = await runCli(runtime, ['--json', 'project', 'link', projectPath, 'selector-json'], { cwd: root, env });
+        expect(link.exitCode).toBe(0);
+        expect(parseJsonEnvelope(link.stdout)).toMatchObject({
+          ok: true,
+          command: 'project.link',
+          data: {
+            projectPath,
+            sourceIds: ['selector-json'],
+          },
+        });
+
+        const search = await runCli(runtime, ['--json', 'search', 'maker flow'], {
+          cwd: nestedProjectCwd,
+          env,
+        });
+        expect(search.exitCode).toBe(0);
+        const searchEnvelope = parseJsonEnvelope(search.stdout);
+        expect(searchEnvelope).toMatchObject({
+          ok: true,
+          command: 'search',
+        });
+        expect(searchEnvelope.data).toMatchObject({
+          results: [
+            expect.objectContaining({
+              sourceId: 'selector-json',
+              markdown: expect.stringContaining('Maker flow documentation starts here.'),
+            }),
+          ],
+        });
+
+        const chunkId = (searchEnvelope.data as { results: Array<{ chunkId: number }> }).results[0]?.chunkId;
+        expect(chunkId).toBeTruthy();
+
+        const show = await runCli(runtime, ['--json', 'show', String(chunkId)], { cwd: root, env });
+        expect(show.exitCode).toBe(0);
+        expect(parseJsonEnvelope(show.stdout)).toMatchObject({
+          ok: true,
+          command: 'show',
+          data: {
+            chunk: expect.objectContaining({
+              chunkId,
+              sourceId: 'selector-json',
+              markdown: expect.stringContaining('Maker flow documentation starts here.'),
+            }),
+          },
+        });
+      } finally {
+        await server.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each(['tsx', 'dist'] as const)(
+    'emits structured JSON envelopes for failure paths with %s runtime',
+    async (runtime) => {
+      const env = {
+        ...process.env,
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      };
+      const nestedProjectCwd = join(root, 'workspace', 'trader', 'apps', 'worker');
+      mkdirSync(nestedProjectCwd, { recursive: true });
+
+      const unscopedSearch = await runCli(runtime, ['--json', 'search', 'maker flow'], {
+        cwd: nestedProjectCwd,
+        env,
+      });
+      expect(unscopedSearch.exitCode).toBe(1);
+      expect(unscopedSearch.stderr).toBe('');
+      expect(parseJsonEnvelope(unscopedSearch.stdout)).toMatchObject({
+        ok: false,
+        command: 'search',
+        error: {
+          message: 'No linked project scope found. Use --source or --all.',
+        },
+      });
+
+      const show = await runCli(runtime, ['--json', 'show', '99999'], {
+        cwd: root,
+        env,
+      });
+      expect(show.exitCode).toBe(1);
+      expect(show.stderr).toBe('');
+      expect(parseJsonEnvelope(show.stdout)).toMatchObject({
+        ok: false,
+        command: 'show',
+        error: {
+          message: 'Chunk 99999 not found',
+        },
+      });
     },
     30_000,
   );
