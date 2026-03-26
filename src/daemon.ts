@@ -1,18 +1,16 @@
-import { access, readdir } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
-import { resolve, extname, join } from 'node:path';
+import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 
 import type { Catalog } from './catalog/catalog.js';
 import { fetchSource } from './fetch/fetch-source.js';
 import { loadSourceSpec } from './spec/source-spec.js';
+import { getBundledSourcesDir } from './runtime/bundled-sources.js';
+import { pathExists, uniqueResolvedPaths, walkSourceSpecFiles } from './spec/source-spec-files.js';
 
 const DEFAULT_INTERVAL_MINUTES = 60;
 const DEFAULT_CONTAINER_SOURCE_DIR = '/app/sources';
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
-const SOURCE_SPEC_EXTENSIONS = new Set(['.yaml', '.yml', '.json']);
 
 export type DaemonConfig = {
   intervalMinutes: number;
@@ -111,10 +109,6 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function getBundledSourceDir(): string {
-  return resolve(fileURLToPath(new URL('../sources', import.meta.url)));
-}
-
 function parsePositiveInteger(raw: string, variableName: string): number {
   if (!/^\d+$/.test(raw)) {
     throw new Error(`${variableName} must be a positive integer`);
@@ -140,54 +134,6 @@ function parseBoolean(raw: string, variableName: string): boolean {
   throw new Error(`${variableName} must be one of: true, false, 1, 0, yes, no, on, off`);
 }
 
-function uniquePaths(paths: string[]): string[] {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-
-  for (const rawPath of paths) {
-    const normalized = resolve(rawPath);
-    if (seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    unique.push(normalized);
-  }
-
-  return unique;
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await access(targetPath, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function walkSpecFiles(rootDir: string): Promise<string[]> {
-  const entries = await readdir(rootDir, { withFileTypes: true });
-  const discovered: string[] = [];
-
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      discovered.push(...await walkSpecFiles(entryPath));
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    if (SOURCE_SPEC_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-      discovered.push(entryPath);
-    }
-  }
-
-  return discovered;
-}
-
 export function parseDaemonConfig(
   env: NodeJS.ProcessEnv,
   options: ParseDaemonConfigOptions = {},
@@ -200,13 +146,13 @@ export function parseDaemonConfig(
     ? parseBoolean(env.AIOCS_DAEMON_FETCH_ON_START, 'AIOCS_DAEMON_FETCH_ON_START')
     : true;
 
-  const defaultSourceDirs = uniquePaths([
+  const defaultSourceDirs = uniqueResolvedPaths([
     options.containerSourceDir ?? DEFAULT_CONTAINER_SOURCE_DIR,
-    options.bundledSourceDir ?? getBundledSourceDir(),
+    options.bundledSourceDir ?? getBundledSourcesDir(),
   ]);
 
   const sourceSpecDirs = env.AIOCS_SOURCE_SPEC_DIRS
-    ? uniquePaths(
+    ? uniqueResolvedPaths(
       env.AIOCS_SOURCE_SPEC_DIRS
         .split(',')
         .map((entry) => entry.trim())
@@ -227,7 +173,7 @@ export function parseDaemonConfig(
 }
 
 export async function bootstrapSourceSpecs(input: BootstrapSourceSpecsInput): Promise<BootstrapResult> {
-  const normalizedSourceSpecDirs = uniquePaths(input.sourceSpecDirs);
+  const normalizedSourceSpecDirs = uniqueResolvedPaths(input.sourceSpecDirs);
   const missingDirs: string[] = [];
   const existingDirs: string[] = [];
   const sources: BootstrappedSource[] = [];
@@ -245,7 +191,7 @@ export async function bootstrapSourceSpecs(input: BootstrapSourceSpecsInput): Pr
   }
 
   for (const sourceSpecDir of existingDirs) {
-    const specPaths = await walkSpecFiles(sourceSpecDir);
+    const specPaths = await walkSourceSpecFiles(sourceSpecDir);
     for (const specPath of specPaths) {
       const spec = await loadSourceSpec(specPath);
       const upserted = input.catalog.upsertSource(spec, { specPath });

@@ -1,11 +1,36 @@
 {
   "name": "aiocs",
   "version": "0.1.0",
-  "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Local-only documentation store, fetcher, and search CLI for AI agents.",
+  "keywords": [
+    "ai",
+    "docs",
+    "search",
+    "mcp",
+    "cli"
+  ],
+  "homepage": "https://github.com/chonkie-inc/mandex/tree/main/aiocs",
+  "bugs": {
+    "url": "https://github.com/chonkie-inc/mandex/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chonkie-inc/mandex.git",
+    "directory": "aiocs"
+  },
+  "files": [
+    "dist",
+    "sources",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "skills"
+  ],
   "bin": {
-    "docs": "./dist/cli.js"
+    "docs": "./dist/cli.js",
+    "aiocs-mcp": "./dist/mcp-server.js"
   },
   "engines": {
     "node": ">=22"
@@ -13,11 +38,13 @@
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "dev": "tsx src/cli.ts",
+    "dev:mcp": "tsx src/mcp-server.ts",
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
     "@mozilla/readability": "^0.6.0",
     "better-sqlite3": "^12.4.1",
     "commander": "^14.0.1",

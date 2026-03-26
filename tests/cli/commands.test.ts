@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import packageJson from '../../package.json' with { type: 'json' };
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -62,6 +63,102 @@ describe('CLI commands', () => {
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
+
+  it.each(['tsx', 'dist'] as const)(
+    'reports the current package version with %s runtime',
+    async (runtime) => {
+      const env = {
+        ...process.env,
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      };
+
+      const version = await runCli(runtime, ['--version'], { cwd: root, env });
+      expect(version.exitCode).toBe(0);
+      expect(version.stdout.trim()).toBe(packageJson.version);
+      expect(version.stderr).toBe('');
+    },
+    30_000,
+  );
+
+  it.each(['tsx', 'dist'] as const)(
+    'bootstraps built-in sources and emits doctor output with %s runtime',
+    async (runtime) => {
+      const env = {
+        ...process.env,
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      };
+
+      const init = await runCli(runtime, ['--json', 'init', '--no-fetch'], { cwd: root, env });
+      expect(init.exitCode).toBe(0);
+      expect(parseJsonEnvelope(init.stdout)).toMatchObject({
+        ok: true,
+        command: 'init',
+        data: {
+          fetched: false,
+          initializedSources: [
+            expect.objectContaining({ sourceId: 'ethereal' }),
+            expect.objectContaining({ sourceId: 'hyperliquid' }),
+            expect.objectContaining({ sourceId: 'lighter' }),
+            expect.objectContaining({ sourceId: 'nado' }),
+            expect.objectContaining({ sourceId: 'synthetix' }),
+          ],
+        },
+      });
+
+      const sourceList = await runCli(runtime, ['--json', 'source', 'list'], { cwd: root, env });
+      expect(sourceList.exitCode).toBe(0);
+      expect(parseJsonEnvelope(sourceList.stdout)).toMatchObject({
+        ok: true,
+        command: 'source.list',
+        data: {
+          sources: expect.arrayContaining([
+            expect.objectContaining({ id: 'ethereal' }),
+            expect.objectContaining({ id: 'hyperliquid' }),
+            expect.objectContaining({ id: 'lighter' }),
+            expect.objectContaining({ id: 'nado' }),
+            expect.objectContaining({ id: 'synthetix' }),
+          ]),
+        },
+      });
+
+      const doctor = await runCli(runtime, ['--json', 'doctor'], { cwd: root, env });
+      expect(doctor.exitCode).toBe(0);
+      expect(parseJsonEnvelope(doctor.stdout)).toMatchObject({
+        ok: true,
+        command: 'doctor',
+        data: {
+          summary: expect.objectContaining({
+            status: expect.stringMatching(/^(healthy|degraded|unhealthy)$/),
+          }),
+          checks: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'catalog',
+              status: 'pass',
+            }),
+            expect.objectContaining({
+              id: 'playwright',
+              status: expect.stringMatching(/^(pass|warn|fail)$/),
+            }),
+            expect.objectContaining({
+              id: 'daemon-config',
+              status: expect.stringMatching(/^(pass|warn|fail)$/),
+            }),
+            expect.objectContaining({
+              id: 'source-spec-dirs',
+              status: expect.stringMatching(/^(pass|warn|fail)$/),
+            }),
+            expect.objectContaining({
+              id: 'docker',
+              status: expect.stringMatching(/^(pass|warn|fail)$/),
+            }),
+          ]),
+        },
+      });
+    },
+    30_000,
+  );
 
   it.each(['tsx', 'dist'] as const)(
     'supports source upsert, fetch, project link, search, show, and snapshot listing with %s runtime',

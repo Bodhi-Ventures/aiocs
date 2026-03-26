@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { Command, CommanderError } from 'commander';
-import { resolve } from 'node:path';
 
 import { openCatalog } from './catalog/catalog.js';
 import {
@@ -13,36 +12,27 @@ import {
   type HumanOutput,
 } from './cli-output.js';
 import { startDaemon, parseDaemonConfig, type DaemonEvent } from './daemon.js';
-import { resolveProjectScope } from './catalog/project-scope.js';
-import { fetchSource } from './fetch/fetch-source.js';
 import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
-import { loadSourceSpec } from './spec/source-spec.js';
-
-type SearchOptions = {
-  source: string[];
-  snapshot?: string;
-  all?: boolean;
-  project?: string;
-};
+import { packageName, packageVersion } from './runtime/package-metadata.js';
+import {
+  fetchSources,
+  getDoctorReport,
+  initBuiltInSources,
+  linkProjectSources,
+  listSnapshotsForSource,
+  listSources,
+  searchCatalog,
+  showChunk,
+  type SearchOptions,
+  unlinkProjectSources,
+  upsertSourceFromSpecFile,
+  refreshDueSources,
+} from './services.js';
 
 type CommandResult<TData> = {
   data: TData;
   human?: HumanOutput;
 };
-
-function createCatalog() {
-  const dataDir = getAiocsDataDir();
-  getAiocsConfigDir();
-  return {
-    dataDir,
-    catalog: openCatalog({ dataDir }),
-  };
-}
-
-function withCatalog<T>(run: (ctx: { dataDir: string; catalog: ReturnType<typeof openCatalog> }) => Promise<T> | T): Promise<T> {
-  const ctx = createCatalog();
-  return Promise.resolve(run(ctx)).finally(() => ctx.catalog.close());
-}
 
 function renderSearchResult(result: {
   chunkId: number;
@@ -145,6 +135,7 @@ const program = new Command();
 program
   .name('docs')
   .description('Local-only docs fetch and search CLI for AI agents.')
+  .option('-V, --version', 'emit the current aiocs version')
   .option('--json', 'emit machine-readable JSON output')
   .showHelpAfterError();
 
@@ -163,6 +154,93 @@ program.configureOutput({
 
 program.exitOverride();
 
+function maybeHandleRootVersionRequest(argv: string[]): boolean {
+  const tokens = argv.slice(2);
+  const filtered = tokens.filter((token) => token !== '--json');
+  const isRootVersionRequest = filtered.length === 1 && ['--version', '-V'].includes(filtered[0] ?? '');
+  if (!isRootVersionRequest) {
+    return false;
+  }
+
+  if (argvWantsJson(argv)) {
+    emitSuccess({
+      json: true,
+      commandName: 'version',
+      data: {
+        name: packageName,
+        version: packageVersion,
+      },
+    });
+  } else {
+    console.log(packageVersion);
+  }
+
+  return true;
+}
+
+if (maybeHandleRootVersionRequest(process.argv)) {
+  process.exit(0);
+}
+
+program
+  .command('version')
+  .description('Show the current aiocs version.')
+  .action(async (_options: unknown, command: Command) => {
+    await executeCommand(command, 'version', async () => ({
+      data: {
+        name: packageName,
+        version: packageVersion,
+      },
+      human: packageVersion,
+    }));
+  });
+
+program
+  .command('init')
+  .description('Register bundled built-in source specs and optionally fetch them.')
+  .option('--fetch', 'fetch built-in sources immediately')
+  .option('--no-fetch', 'skip immediate fetching after bootstrapping')
+  .action(async (options: { fetch?: boolean }, command: Command) => {
+    await executeCommand(command, 'init', async () => {
+      const result = await initBuiltInSources({
+        fetch: options.fetch ?? false,
+      });
+
+      return {
+        data: result,
+        human: [
+          `Initialized ${result.initializedSources.length} built-in sources from ${result.sourceSpecDir}`,
+          ...(result.removedSourceIds.length > 0
+            ? [`Removed managed sources: ${result.removedSourceIds.join(', ')}`]
+            : []),
+          ...(result.fetchResults.length > 0
+            ? result.fetchResults.map((entry) => {
+                const verb = entry.reused ? 'Reused' : 'Fetched';
+                return `${verb} ${entry.sourceId} -> ${entry.snapshotId} (${entry.pageCount} pages)`;
+              })
+            : [result.fetched ? 'No built-in sources were fetched.' : 'Skipped fetching built-in sources.']),
+        ],
+      };
+    });
+  });
+
+program
+  .command('doctor')
+  .alias('health')
+  .description('Validate the local aiocs runtime and optional Docker daemon path.')
+  .action(async (_options: unknown, command: Command) => {
+    await executeCommand(command, 'doctor', async () => {
+      const report = await getDoctorReport();
+      return {
+        data: report,
+        human: [
+          `Overall status: ${report.summary.status}`,
+          ...report.checks.map((check) => `${check.status.toUpperCase()} | ${check.id} | ${check.summary}`),
+        ],
+      };
+    });
+  });
+
 const source = program.command('source');
 
 source
@@ -170,17 +248,10 @@ source
   .argument('<spec-file>')
   .action(async (specFile: string, _options: Record<string, never>, command: Command) => {
     await executeCommand(command, 'source.upsert', async () => {
-      const specPath = resolve(specFile);
-      const spec = await loadSourceSpec(specPath);
-      const result = await withCatalog(({ catalog }) => catalog.upsertSource(spec, { specPath }));
-
+      const result = await upsertSourceFromSpecFile(specFile);
       return {
-        data: {
-          sourceId: result.sourceId,
-          configHash: result.configHash,
-          specPath,
-        },
-        human: `Upserted source ${spec.id}`,
+        data: result,
+        human: `Upserted source ${result.sourceId}`,
       };
     });
   });
@@ -189,11 +260,10 @@ source
   .command('list')
   .action(async (_options: unknown, command: Command) => {
     await executeCommand(command, 'source.list', async () => {
-      const sources = await withCatalog(({ catalog }) => catalog.listSources());
+      const result = await listSources();
+      const sources = result.sources;
       return {
-        data: {
-          sources,
-        },
+        data: result,
         human: sources.length === 0
           ? 'No sources registered.'
           : sources.map((item) => [
@@ -211,32 +281,11 @@ program
   .argument('<source-id-or-all>')
   .action(async (sourceIdOrAll: string, _options: Record<string, never>, command: Command) => {
     await executeCommand(command, 'fetch', async () => {
-      const results = await withCatalog(async ({ catalog, dataDir }) => {
-        const sourceIds = sourceIdOrAll === 'all'
-          ? catalog.listSources().map((item) => item.id)
-          : [sourceIdOrAll];
-
-        if (sourceIds.length === 0) {
-          return [];
-        }
-
-        const fetched = [];
-        for (const sourceId of sourceIds) {
-          const result = await fetchSource({ catalog, sourceId, dataDir });
-          fetched.push({
-            sourceId,
-            snapshotId: result.snapshotId,
-            pageCount: result.pageCount,
-            reused: result.reused,
-          });
-        }
-        return fetched;
-      });
+      const result = await fetchSources(sourceIdOrAll);
+      const results = result.results;
 
       return {
-        data: {
-          results,
-        },
+        data: result,
         human: results.length === 0
           ? 'No sources registered.'
           : results.map((result) => {
@@ -252,27 +301,11 @@ refresh
   .command('due')
   .action(async (_options: unknown, command: Command) => {
     await executeCommand(command, 'refresh.due', async () => {
-      const results = await withCatalog(async ({ catalog, dataDir }) => {
-        const dueIds = catalog.listDueSourceIds();
-        const fetched = [];
-
-        for (const sourceId of dueIds) {
-          const result = await fetchSource({ catalog, sourceId, dataDir });
-          fetched.push({
-            sourceId,
-            snapshotId: result.snapshotId,
-            pageCount: result.pageCount,
-            reused: result.reused,
-          });
-        }
-
-        return fetched;
-      });
+      const result = await refreshDueSources();
+      const results = result.results;
 
       return {
-        data: {
-          results,
-        },
+        data: result,
         human: results.length === 0
           ? 'No sources due for refresh.'
           : results.map((result) => {
@@ -289,12 +322,10 @@ snapshot
   .argument('<source-id>')
   .action(async (sourceId: string, _options: Record<string, never>, command: Command) => {
     await executeCommand(command, 'snapshot.list', async () => {
-      const snapshots = await withCatalog(({ catalog }) => catalog.listSnapshots(sourceId));
+      const result = await listSnapshotsForSource(sourceId);
+      const snapshots = result.snapshots;
       return {
-        data: {
-          sourceId,
-          snapshots,
-        },
+        data: result,
         human: snapshots.length === 0
           ? `No snapshots for ${sourceId}`
           : [
@@ -312,16 +343,10 @@ project
   .argument('<source-ids...>')
   .action(async (projectPath: string, sourceIds: string[], _options: Record<string, never>, command: Command) => {
     await executeCommand(command, 'project.link', async () => {
-      const resolvedProjectPath = resolve(projectPath);
-      await withCatalog(({ catalog }) => {
-        catalog.linkProject(resolvedProjectPath, sourceIds);
-      });
+      const result = await linkProjectSources(projectPath, sourceIds);
       return {
-        data: {
-          projectPath: resolvedProjectPath,
-          sourceIds,
-        },
-        human: `Linked ${resolvedProjectPath} -> ${sourceIds.join(', ')}`,
+        data: result,
+        human: `Linked ${result.projectPath} -> ${sourceIds.join(', ')}`,
       };
     });
   });
@@ -332,16 +357,10 @@ project
   .argument('[source-ids...]')
   .action(async (projectPath: string, sourceIds: string[], _options: Record<string, never>, command: Command) => {
     await executeCommand(command, 'project.unlink', async () => {
-      const resolvedProjectPath = resolve(projectPath);
-      await withCatalog(({ catalog }) => {
-        catalog.unlinkProject(resolvedProjectPath, sourceIds);
-      });
+      const result = await unlinkProjectSources(projectPath, sourceIds);
       return {
-        data: {
-          projectPath: resolvedProjectPath,
-          sourceIds,
-        },
-        human: `Unlinked ${resolvedProjectPath}`,
+        data: result,
+        human: `Unlinked ${result.projectPath}`,
       };
     });
   });
@@ -358,29 +377,11 @@ program
   .option('--project <path>', 'resolve search scope as if running from this path')
   .action(async (query: string, options: SearchOptions, command: Command) => {
     await executeCommand(command, 'search', async () => {
-      const cwd = options.project ? resolve(options.project) : process.cwd();
-      const explicitSources = options.source.length > 0;
-      const results = await withCatalog(({ catalog }) => {
-        const scope = resolveProjectScope(cwd, catalog.listProjectLinks());
-
-        if (!explicitSources && !options.all && !scope) {
-          throw new Error('No linked project scope found. Use --source or --all.');
-        }
-
-        return catalog.search({
-          query,
-          cwd,
-          ...(explicitSources ? { sourceIds: options.source } : {}),
-          ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
-          ...(options.all ? { all: true } : {}),
-        });
-      });
+      const result = await searchCatalog(query, options);
+      const results = result.results;
 
       return {
-        data: {
-          query,
-          results,
-        },
+        data: result,
         human: results.length === 0
           ? `No results for "${query}"`
           : results.map((result) => renderSearchResult(result)),
@@ -393,16 +394,10 @@ program
   .argument('<chunk-id>')
   .action(async (chunkId: string, _options: Record<string, never>, command: Command) => {
     await executeCommand(command, 'show', async () => {
-      const chunk = await withCatalog(({ catalog }) => catalog.getChunkById(Number(chunkId)));
-      if (!chunk) {
-        throw new Error(`Chunk ${chunkId} not found`);
-      }
-
+      const result = await showChunk(Number(chunkId));
       return {
-        data: {
-          chunk,
-        },
-        human: renderSearchResult(chunk),
+        data: result,
+        human: renderSearchResult(result.chunk),
       };
     });
   });
@@ -420,7 +415,10 @@ program
 
     try {
       const config = parseDaemonConfig(process.env);
-      await withCatalog(async ({ catalog, dataDir }) => {
+      const dataDir = getAiocsDataDir();
+      getAiocsConfigDir();
+      const catalog = openCatalog({ dataDir });
+      try {
         await startDaemon({
           catalog,
           dataDir,
@@ -428,7 +426,9 @@ program
           logger,
           signal: abortController.signal,
         });
-      });
+      } finally {
+        catalog.close();
+      }
     } catch (error) {
       emitError({
         json,

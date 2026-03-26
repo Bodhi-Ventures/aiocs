@@ -23,6 +23,13 @@ For testing or local overrides, set:
 ## Install
 
 ```bash
+npm install --global aiocs
+docs --version
+```
+
+For repository development:
+
+```bash
 pnpm install
 pnpm build
 ```
@@ -42,6 +49,9 @@ Or after build:
 For AI agents, prefer the root-level `--json` flag for one-shot commands:
 
 ```bash
+docs --json version
+docs --json doctor
+docs --json init --no-fetch
 pnpm dev -- --json source list
 pnpm dev -- --json search "maker flow" --source hyperliquid
 pnpm dev -- --json show 42
@@ -71,6 +81,8 @@ Failures still exit with status `1`, but emit a JSON error document instead of h
 }
 ```
 
+The full stable JSON contract lives in [docs/json-contract.md](./docs/json-contract.md).
+
 ## Built-in sources
 
 Initial source specs are shipped in `sources/`:
@@ -81,14 +93,19 @@ Initial source specs are shipped in `sources/`:
 - `nado`
 - `ethereal`
 
-Load them into the local catalog with:
+Bootstrap them in one command:
 
 ```bash
-pnpm dev -- source upsert sources/synthetix.yaml
-pnpm dev -- source upsert sources/hyperliquid.yaml
-pnpm dev -- source upsert sources/lighter.yaml
-pnpm dev -- source upsert sources/nado.yaml
-pnpm dev -- source upsert sources/ethereal.yaml
+docs init --no-fetch
+docs init --fetch
+docs --json init --no-fetch
+```
+
+Validate the machine before bootstrapping:
+
+```bash
+docs doctor
+docs --json doctor
 ```
 
 ## Workflow
@@ -129,6 +146,9 @@ When `docs search` runs inside a linked project, it automatically scopes to that
 
 All one-shot commands support `--json`:
 
+- `version`
+- `init`
+- `doctor`
 - `source upsert`
 - `source list`
 - `fetch`
@@ -142,6 +162,8 @@ All one-shot commands support `--json`:
 Representative examples:
 
 ```bash
+pnpm dev -- --json doctor
+pnpm dev -- --json init --no-fetch
 pnpm dev -- --json source upsert sources/hyperliquid.yaml
 pnpm dev -- --json fetch hyperliquid
 pnpm dev -- --json refresh due
@@ -206,6 +228,30 @@ Example event stream:
 {"type":"daemon.cycle.completed","reason":"startup","result":{"dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"sources":[]}, "refreshed":[],"failed":[]}}
 ```
 
+## MCP server
+
+`aiocs` also ships an MCP server binary for tool-native agent integrations:
+
+```bash
+aiocs-mcp
+pnpm dev:mcp
+```
+
+The MCP server exposes the same shared operations as the CLI without shell parsing:
+
+- `version`
+- `doctor`
+- `init`
+- `source_upsert`
+- `source_list`
+- `fetch`
+- `refresh_due`
+- `snapshot_list`
+- `project_link`
+- `project_unlink`
+- `search`
+- `show`
+
 ## Docker
 
 The repo ships a long-running Docker service for scheduled refreshes.
@@ -255,4 +301,5 @@ Supported extraction strategies:
 pnpm lint
 pnpm test
 pnpm build
+npm pack --dry-run
 ```

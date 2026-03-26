@@ -1,0 +1,210 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+import packageJson from '../../package.json' with { type: 'json' };
+import { startDocsServer } from '../helpers/docs-server.js';
+
+const repoRoot = '/Users/jmucha/repos/mandex/aiocs';
+const distMcpPath = `${repoRoot}/dist/mcp-server.js`;
+
+function stringEnv(extra: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({
+      ...process.env,
+      ...extra,
+    }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+}
+
+function structuredContent<T>(result: Record<string, unknown>): T {
+  return result.structuredContent as T;
+}
+
+describe('mcp server', () => {
+  let root: string;
+
+  beforeAll(async () => {
+    const { execa } = await import('execa');
+    await execa('pnpm', ['build'], {
+      cwd: repoRoot,
+    });
+  });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aiocs-mcp-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('serves the shared aiocs operations over stdio MCP', async () => {
+    const docsServer = await startDocsServer();
+    const specPath = join(root, 'mcp-selector.yaml');
+    const projectPath = join(root, 'workspace', 'desk');
+    mkdirSync(projectPath, { recursive: true });
+
+    writeFileSync(specPath, `
+id: mcp-selector
+label: MCP selector
+startUrls:
+  - ${docsServer.baseUrl}/selector/start
+allowedHosts:
+  - 127.0.0.1
+discovery:
+  include:
+    - ${docsServer.baseUrl}/selector/**
+  exclude: []
+  maxPages: 10
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+`);
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [distMcpPath],
+      cwd: repoRoot,
+      env: stringEnv({
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      }),
+      stderr: 'pipe',
+    });
+    const stderrChunks: string[] = [];
+    transport.stderr?.on('data', (chunk) => {
+      stderrChunks.push(chunk.toString());
+    });
+
+    const client = new Client({
+      name: 'aiocs-test-client',
+      version: '0.0.0-test',
+    });
+
+    try {
+      await client.connect(transport);
+
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+        'version',
+        'doctor',
+        'init',
+        'source_upsert',
+        'source_list',
+        'fetch',
+        'refresh_due',
+        'snapshot_list',
+        'project_link',
+        'project_unlink',
+        'search',
+        'show',
+      ]));
+
+      const version = await client.callTool({
+        name: 'version',
+        arguments: {},
+      });
+      expect(structuredContent<{ name: string; version: string }>(version)).toEqual({
+        name: 'aiocs',
+        version: packageJson.version,
+      });
+
+      const doctor = await client.callTool({
+        name: 'doctor',
+        arguments: {},
+      });
+      expect(structuredContent<{ summary: { status: string } }>(doctor)).toMatchObject({
+        summary: {
+          status: expect.stringMatching(/^(healthy|degraded|unhealthy)$/),
+        },
+      });
+
+      const init = await client.callTool({
+        name: 'init',
+        arguments: {
+          fetch: false,
+        },
+      });
+      expect(structuredContent<{ initializedSources: Array<{ sourceId: string }> }>(init)).toMatchObject({
+        initializedSources: expect.arrayContaining([
+          expect.objectContaining({ sourceId: 'ethereal' }),
+          expect.objectContaining({ sourceId: 'hyperliquid' }),
+          expect.objectContaining({ sourceId: 'lighter' }),
+          expect.objectContaining({ sourceId: 'nado' }),
+          expect.objectContaining({ sourceId: 'synthetix' }),
+        ]),
+      });
+
+      const upsert = await client.callTool({
+        name: 'source_upsert',
+        arguments: {
+          specFile: specPath,
+        },
+      });
+      expect(structuredContent<{ sourceId: string }>(upsert)).toMatchObject({
+        sourceId: 'mcp-selector',
+      });
+
+      const link = await client.callTool({
+        name: 'project_link',
+        arguments: {
+          projectPath,
+          sourceIds: ['mcp-selector'],
+        },
+      });
+      expect(structuredContent<{ projectPath: string; sourceIds: string[] }>(link)).toEqual({
+        projectPath,
+        sourceIds: ['mcp-selector'],
+      });
+
+      const fetch = await client.callTool({
+        name: 'fetch',
+        arguments: {
+          sourceIdOrAll: 'mcp-selector',
+        },
+      });
+      expect(structuredContent<{ results: Array<{ sourceId: string; pageCount: number }> }>(fetch)).toMatchObject({
+        results: [
+          expect.objectContaining({
+            sourceId: 'mcp-selector',
+            pageCount: 2,
+          }),
+        ],
+      });
+
+      const search = await client.callTool({
+        name: 'search',
+        arguments: {
+          query: 'maker flow',
+          project: projectPath,
+        },
+      });
+      const searchData = structuredContent<{ results: Array<{ chunkId: number; sourceId: string }> }>(search);
+      expect(searchData.results[0]).toMatchObject({
+        sourceId: 'mcp-selector',
+      });
+
+      const show = await client.callTool({
+        name: 'show',
+        arguments: {
+          chunkId: searchData.results[0]?.chunkId,
+        },
+      });
+      expect(structuredContent<{ chunk: { markdown: string } }>(show).chunk.markdown).toContain('Maker flow documentation starts here.');
+    } finally {
+      await client.close();
+      await docsServer.close();
+    }
+
+    expect(stderrChunks.join('')).toBe('');
+  }, 30_000);
+});
