@@ -254,10 +254,6 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      input.catalog.recordFailedFetchRun({
-        sourceId,
-        errorMessage,
-      });
       failed.push({
         sourceId,
         errorMessage,

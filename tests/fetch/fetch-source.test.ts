@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openCatalog } from '../../src/catalog/catalog.js';
@@ -615,4 +616,109 @@ describe('fetchSource', () => {
       catalog.close();
     }
   }, 7_000);
+
+  it('retries transient source fetch failures up to three attempts before succeeding', async () => {
+    const server = await startDocsServer();
+    const catalog = openCatalog({ dataDir: root });
+    const spec = parseSourceSpecObject({
+      id: 'selector-flaky-source',
+      label: 'Selector Flaky Source',
+      startUrls: [`${server.baseUrl}/selector-flaky/start`],
+      allowedHosts: ['127.0.0.1'],
+      discovery: {
+        include: [`${server.baseUrl}/selector-flaky/**`],
+        exclude: [],
+        maxPages: 10,
+      },
+      extract: {
+        strategy: 'selector',
+        selector: 'article',
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+    });
+
+    try {
+      catalog.upsertSource(spec);
+
+      const result = await fetchSource({ catalog, sourceId: spec.id, dataDir: root });
+      expect(result.pageCount).toBe(1);
+
+      const countsResponse = await fetch(`${server.baseUrl}/__counts?path=/selector-flaky/start`);
+      const counts = await countsResponse.json() as { count: number };
+      expect(counts.count).toBe(3);
+
+      const db = new Database(join(root, 'catalog.sqlite'));
+      try {
+        const successRuns = db.prepare('SELECT COUNT(*) AS count FROM fetch_runs WHERE source_id = ? AND status = ?')
+          .get(spec.id, 'success') as { count: number };
+        const failedRuns = db.prepare('SELECT COUNT(*) AS count FROM fetch_runs WHERE source_id = ? AND status = ?')
+          .get(spec.id, 'failed') as { count: number };
+        expect(successRuns.count).toBe(1);
+        expect(failedRuns.count).toBe(0);
+      } finally {
+        db.close();
+      }
+    } finally {
+      await server.close();
+      catalog.close();
+    }
+  });
+
+  it('records a single failed run only after exhausting three attempts', async () => {
+    const server = await startDocsServer();
+    const catalog = openCatalog({ dataDir: root });
+    const spec = parseSourceSpecObject({
+      id: 'selector-always-fail-source',
+      label: 'Selector Always Fail Source',
+      startUrls: [`${server.baseUrl}/selector-always-fail/start`],
+      allowedHosts: ['127.0.0.1'],
+      discovery: {
+        include: [`${server.baseUrl}/selector-always-fail/**`],
+        exclude: [],
+        maxPages: 10,
+      },
+      extract: {
+        strategy: 'selector',
+        selector: 'article',
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+    });
+
+    try {
+      catalog.upsertSource(spec);
+
+      await expect(fetchSource({ catalog, sourceId: spec.id, dataDir: root }))
+        .rejects
+        .toThrow(`No pages fetched for source '${spec.id}'`);
+
+      const countsResponse = await fetch(`${server.baseUrl}/__counts?path=/selector-always-fail/start`);
+      const counts = await countsResponse.json() as { count: number };
+      expect(counts.count).toBe(3);
+
+      const db = new Database(join(root, 'catalog.sqlite'));
+      try {
+        const successRuns = db.prepare('SELECT COUNT(*) AS count FROM fetch_runs WHERE source_id = ? AND status = ?')
+          .get(spec.id, 'success') as { count: number };
+        const failedRuns = db.prepare('SELECT COUNT(*) AS count FROM fetch_runs WHERE source_id = ? AND status = ?')
+          .get(spec.id, 'failed') as { count: number };
+        expect(successRuns.count).toBe(0);
+        expect(failedRuns.count).toBe(1);
+      } finally {
+        db.close();
+      }
+    } finally {
+      await server.close();
+      catalog.close();
+    }
+  });
 });

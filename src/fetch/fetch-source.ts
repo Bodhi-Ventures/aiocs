@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { chromium } from 'playwright';
 
@@ -21,6 +22,9 @@ type FetchedPage = {
 };
 
 type NavigationResponse = Awaited<ReturnType<import('playwright').Page['goto']>>;
+
+const MAX_FETCH_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 250;
 
 function canonicalizeUrl(raw: string): string {
   const url = new URL(raw);
@@ -128,7 +132,7 @@ async function discoverLinks(page: import('playwright').Page): Promise<string[]>
   );
 }
 
-export async function fetchSource(input: FetchSourceInput): Promise<{
+async function fetchSourceOnce(input: FetchSourceInput): Promise<{
   snapshotId: string;
   pageCount: number;
   reused: boolean;
@@ -283,14 +287,35 @@ export async function fetchSource(input: FetchSourceInput): Promise<{
       pageCount: pages.length,
       reused: result.reused,
     };
-  } catch (error) {
-    input.catalog.recordFailedFetchRun({
-      sourceId: input.sourceId,
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
   } finally {
     await context.close();
     await browser.close();
   }
+}
+
+export async function fetchSource(input: FetchSourceInput): Promise<{
+  snapshotId: string;
+  pageCount: number;
+  reused: boolean;
+}> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchSourceOnce(input);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_FETCH_ATTEMPTS) {
+        input.catalog.recordFailedFetchRun({
+          sourceId: input.sourceId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+
+      await sleep(RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }

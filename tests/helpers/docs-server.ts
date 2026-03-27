@@ -108,6 +108,24 @@ function createRoutes(): Record<string, RouteDefinition> {
         <a href="/~gitbook/pdf?page=test">GitBook export</a>
       `,
     ),
+    '/selector-flaky/start': htmlRoute(
+      'Selector Flaky Start',
+      `
+        <article>
+          <h1>Selector Flaky Start</h1>
+          <p>Transient failures should eventually recover.</p>
+        </article>
+      `,
+    ),
+    '/selector-always-fail/start': htmlRoute(
+      'Selector Always Fail Start',
+      `
+        <article>
+          <h1>Selector Always Fail Start</h1>
+          <p>This route should never succeed.</p>
+        </article>
+      `,
+    ),
     '/selector-raw-mirror/start': htmlRoute(
       'Selector Raw Mirror Start',
       `
@@ -338,8 +356,56 @@ function createRoutes(): Record<string, RouteDefinition> {
 
 export async function startDocsServer(): Promise<RunningServer> {
   const routes = createRoutes();
+  const requestCounts = new Map<string, number>();
   const server = createServer((request, response) => {
-    const route = routes[request.url ?? '/'];
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+
+    if (url.pathname === '/__counts') {
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/json; charset=utf-8');
+      response.end(JSON.stringify({
+        path: url.searchParams.get('path'),
+        count: requestCounts.get(url.searchParams.get('path') ?? '') ?? 0,
+      }));
+      return;
+    }
+
+    const currentCount = (requestCounts.get(url.pathname) ?? 0) + 1;
+    requestCounts.set(url.pathname, currentCount);
+
+    if (url.pathname === '/selector-flaky/start' && currentCount < 3) {
+      sendRoute(response, routeWithStatus(
+        503,
+        htmlRoute(
+          'Selector Flaky Temporary Failure',
+          `
+            <main>
+              <h1>Temporary failure</h1>
+              <p>Retry should recover this route.</p>
+            </main>
+          `,
+        ),
+      ));
+      return;
+    }
+
+    if (url.pathname === '/selector-always-fail/start') {
+      sendRoute(response, routeWithStatus(
+        503,
+        htmlRoute(
+          'Selector Always Fail Temporary Failure',
+          `
+            <main>
+              <h1>Temporary failure</h1>
+              <p>This route keeps failing.</p>
+            </main>
+          `,
+        ),
+      ));
+      return;
+    }
+
+    const route = routes[url.pathname];
 
     if (!route) {
       response.statusCode = 404;

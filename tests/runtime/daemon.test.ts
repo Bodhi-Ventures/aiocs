@@ -18,9 +18,10 @@ function writeSelectorSpec(
   baseUrl: string,
   id = 'daemon-selector',
   everyHours = 24,
+  startPath = '/selector/start',
 ): string {
   const specPath = join(specDir, `${id}.yaml`);
-  writeSelectorSpecAtPath(specPath, baseUrl, id, everyHours);
+  writeSelectorSpecAtPath(specPath, baseUrl, id, everyHours, startPath);
   return specPath;
 }
 
@@ -29,17 +30,18 @@ function writeSelectorSpecAtPath(
   baseUrl: string,
   id: string,
   everyHours = 24,
+  startPath = '/selector/start',
 ): string {
   writeFileSync(specPath, `
 id: ${id}
 label: ${id}
 startUrls:
-  - ${baseUrl}/selector/start
+  - ${baseUrl}${startPath}
 allowedHosts:
   - 127.0.0.1
 discovery:
   include:
-    - ${baseUrl}/selector/**
+    - ${baseUrl}${startPath.split('/').slice(0, -1).join('/') || '/'}/**
   exclude: []
   maxPages: 10
 extract:
@@ -248,6 +250,48 @@ describe('daemon runtime', () => {
           sourceId: 'daemon-schedule-change',
         }),
       ]);
+    } finally {
+      catalog.close();
+      await server.close();
+    }
+  });
+
+  it('retries transient due-source failures within a single daemon cycle', async () => {
+    const server = await startDocsServer();
+    const specDir = join(root, 'specs');
+    const dataDir = join(root, 'data');
+    mkdirSync(specDir, { recursive: true });
+    writeSelectorSpec(specDir, server.baseUrl, 'daemon-flaky', 24, '/selector-flaky/start');
+
+    const catalog = openCatalog({ dataDir });
+
+    try {
+      await bootstrapSourceSpecs({
+        catalog,
+        sourceSpecDirs: [specDir],
+      });
+
+      const db = new Database(join(dataDir, 'catalog.sqlite'));
+      db.prepare('UPDATE sources SET next_due_at = ? WHERE id = ?').run(
+        '2000-01-01T00:00:00.000Z',
+        'daemon-flaky',
+      );
+      db.close();
+
+      const result = await runDaemonCycle({
+        catalog,
+        dataDir,
+        sourceSpecDirs: [specDir],
+      });
+
+      expect(result.refreshed).toEqual([
+        expect.objectContaining({
+          sourceId: 'daemon-flaky',
+          pageCount: 1,
+          reused: false,
+        }),
+      ]);
+      expect(result.failed).toEqual([]);
     } finally {
       catalog.close();
       await server.close();
