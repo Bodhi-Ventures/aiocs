@@ -9,7 +9,6 @@ RUN corepack enable
 
 COPY package.json pnpm-lock.yaml tsconfig.json tsup.config.ts ./
 RUN pnpm install --frozen-lockfile \
-  && pnpm approve-builds --all \
   && pnpm rebuild better-sqlite3 esbuild
 
 COPY src ./src

@@ -16,12 +16,11 @@ describe('release assets', () => {
     expect(packageManifest.license).toBe('MIT');
     expect(packageManifest.repository).toEqual({
       type: 'git',
-      url: 'https://github.com/chonkie-inc/mandex.git',
-      directory: 'aiocs',
+      url: 'https://github.com/Bodhi-Ventures/aiocs.git',
     });
-    expect(packageManifest.homepage).toBe('https://github.com/chonkie-inc/mandex/tree/main/aiocs');
+    expect(packageManifest.homepage).toBe('https://github.com/Bodhi-Ventures/aiocs');
     expect(packageManifest.bugs).toEqual({
-      url: 'https://github.com/chonkie-inc/mandex/issues',
+      url: 'https://github.com/Bodhi-Ventures/aiocs/issues',
     });
     expect(packageManifest.files).toEqual(expect.arrayContaining([
       'dist',

@@ -11,15 +11,15 @@
     "mcp",
     "cli"
   ],
-  "homepage": "https://github.com/chonkie-inc/mandex/tree/main/aiocs",
+  "homepage": "https://github.com/Bodhi-Ventures/aiocs",
   "bugs": {
-    "url": "https://github.com/chonkie-inc/mandex/issues"
+    "url": "https://github.com/Bodhi-Ventures/aiocs/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/chonkie-inc/mandex.git",
-    "directory": "aiocs"
+    "url": "https://github.com/Bodhi-Ventures/aiocs.git"
   },
+  "packageManager": "pnpm@9.15.9",
   "files": [
     "dist",
     "sources",
