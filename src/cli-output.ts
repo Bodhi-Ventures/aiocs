@@ -1,4 +1,7 @@
 import type { Command } from 'commander';
+import { CommanderError } from 'commander';
+
+import { toAiocsError, AIOCS_ERROR_CODES } from './errors.js';
 
 export type CliSuccessEnvelope<TData> = {
   ok: true;
@@ -10,6 +13,7 @@ export type CliErrorEnvelope = {
   ok: false;
   command: string;
   error: {
+    code: string;
     message: string;
     details?: unknown;
   };
@@ -68,14 +72,18 @@ export function emitSuccess<TData>(input: EmitSuccessInput<TData>): void {
 }
 
 function normalizeError(error: unknown): CliErrorEnvelope['error'] {
-  if (error instanceof Error) {
+  if (error instanceof CommanderError) {
     return {
+      code: AIOCS_ERROR_CODES.invalidArgument,
       message: error.message,
     };
   }
 
+  const normalized = toAiocsError(error);
   return {
-    message: String(error),
+    code: normalized.code,
+    message: normalized.message,
+    ...(typeof normalized.details !== 'undefined' ? { details: normalized.details } : {}),
   };
 }
 
@@ -103,7 +111,7 @@ export function inferRequestedCommand(argv: string[]): string {
     return 'cli';
   }
 
-  if (['source', 'snapshot', 'project', 'refresh'].includes(first) && second && !second.startsWith('-')) {
+  if (['source', 'snapshot', 'project', 'refresh', 'verify'].includes(first) && second && !second.startsWith('-')) {
     return `${first}.${second}`;
   }
 

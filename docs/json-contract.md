@@ -23,6 +23,7 @@ Failed commands still write exactly one JSON object to stdout and exit with stat
   "ok": false,
   "command": "show",
   "error": {
+    "code": "CHUNK_NOT_FOUND",
     "message": "Chunk 42 not found"
   }
 }
@@ -33,6 +34,7 @@ Envelope fields:
 - `ok`: `true` when the command executed and returned data, `false` when command execution failed
 - `command`: stable command identifier such as `source.list`, `refresh.due`, `doctor`, or `init`
 - `data`: command-specific payload on success
+- `error.code`: stable machine-readable failure code
 - `error.message`: stable human-readable error summary on failure
 - `error.details`: optional extra machine-readable error context
 
@@ -51,6 +53,7 @@ All of these support the root-level `--json` flag:
 - `project link`
 - `project unlink`
 - `search`
+- `verify coverage`
 - `show`
 
 ## Command payloads
@@ -193,6 +196,10 @@ Summary status values:
 ```json
 {
   "query": "maker flow",
+  "total": 42,
+  "limit": 20,
+  "offset": 0,
+  "hasMore": true,
   "results": [
     {
       "chunkId": 42,
@@ -202,6 +209,43 @@ Summary status values:
       "pageTitle": "Maker flow",
       "sectionTitle": "Order lifecycle",
       "markdown": "# Order lifecycle\n..."
+    }
+  ]
+}
+```
+
+`limit` defaults to `20`. `offset` defaults to `0`.
+
+### `verify.coverage`
+
+```json
+{
+  "sourceId": "hyperliquid",
+  "snapshotId": "snp_...",
+  "complete": false,
+  "summary": {
+    "fileCount": 1,
+    "headingCount": 100,
+    "matchedHeadingCount": 99,
+    "missingHeadingCount": 1,
+    "matchCounts": {
+      "pageTitle": 80,
+      "sectionTitle": 15,
+      "body": 4
+    }
+  },
+  "files": [
+    {
+      "referenceFile": "/absolute/path/to/reference.md",
+      "headingCount": 100,
+      "matchedHeadingCount": 99,
+      "missingHeadingCount": 1,
+      "missingHeadings": ["Missing Heading"],
+      "matchCounts": {
+        "pageTitle": 80,
+        "sectionTitle": 15,
+        "body": 4
+      }
     }
   ]
 }
@@ -243,6 +287,51 @@ Example:
 {"type":"daemon.stopped"}
 ```
 
+## Error codes
+
+Current stable CLI error codes include:
+
+- `INVALID_ARGUMENT`
+- `SOURCE_NOT_FOUND`
+- `SNAPSHOT_NOT_FOUND`
+- `NO_PAGES_FETCHED`
+- `NO_PROJECT_SCOPE`
+- `CHUNK_NOT_FOUND`
+- `REFERENCE_FILE_NOT_FOUND`
+- `INVALID_REFERENCE_FILE`
+- `INTERNAL_ERROR`
+
 ## MCP relationship
 
-The `aiocs-mcp` server does not reuse the CLI envelope. MCP tool calls return structured MCP tool results, but the underlying payloads are intentionally aligned with the same data shapes documented above.
+The `aiocs-mcp` server uses the same underlying payloads, but wraps them in a structured MCP envelope:
+
+Successful MCP tool results:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "name": "aiocs",
+    "version": "0.1.0"
+  }
+}
+```
+
+Failed MCP tool results:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "CHUNK_NOT_FOUND",
+    "message": "Chunk 42 not found"
+  }
+}
+```
+
+The MCP `search` tool supports the same `limit` and `offset` fields as the CLI. The MCP server also exposes:
+
+- `verify_coverage`
+- `batch`
+
+`batch` returns one result object per requested operation, each with its own `ok`, `data`, or `error` fields.

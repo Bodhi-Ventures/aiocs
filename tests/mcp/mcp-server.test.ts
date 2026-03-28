@@ -21,8 +21,8 @@ function stringEnv(extra: Record<string, string>): Record<string, string> {
   );
 }
 
-function structuredContent<T>(result: Record<string, unknown>): T {
-  return result.structuredContent as T;
+function toolData<T>(result: Record<string, unknown>): T {
+  return (result.structuredContent as { ok: true; data: T }).data;
 }
 
 describe('mcp server', () => {
@@ -107,13 +107,15 @@ schedule:
         'project_unlink',
         'search',
         'show',
+        'verify_coverage',
+        'batch',
       ]));
 
       const version = await client.callTool({
         name: 'version',
         arguments: {},
       });
-      expect(structuredContent<{ name: string; version: string }>(version)).toEqual({
+      expect(toolData<{ name: string; version: string }>(version)).toEqual({
         name: 'aiocs',
         version: packageJson.version,
       });
@@ -122,7 +124,7 @@ schedule:
         name: 'doctor',
         arguments: {},
       });
-      expect(structuredContent<{ summary: { status: string } }>(doctor)).toMatchObject({
+      expect(toolData<{ summary: { status: string } }>(doctor)).toMatchObject({
         summary: {
           status: expect.stringMatching(/^(healthy|degraded|unhealthy)$/),
         },
@@ -134,7 +136,7 @@ schedule:
           fetch: false,
         },
       });
-      expect(structuredContent<{ initializedSources: Array<{ sourceId: string }> }>(init)).toMatchObject({
+      expect(toolData<{ initializedSources: Array<{ sourceId: string }> }>(init)).toMatchObject({
         initializedSources: expect.arrayContaining([
           expect.objectContaining({ sourceId: 'ethereal' }),
           expect.objectContaining({ sourceId: 'hyperliquid' }),
@@ -150,7 +152,7 @@ schedule:
           specFile: specPath,
         },
       });
-      expect(structuredContent<{ sourceId: string }>(upsert)).toMatchObject({
+      expect(toolData<{ sourceId: string }>(upsert)).toMatchObject({
         sourceId: 'mcp-selector',
       });
 
@@ -161,7 +163,7 @@ schedule:
           sourceIds: ['mcp-selector'],
         },
       });
-      expect(structuredContent<{ projectPath: string; sourceIds: string[] }>(link)).toEqual({
+      expect(toolData<{ projectPath: string; sourceIds: string[] }>(link)).toEqual({
         projectPath,
         sourceIds: ['mcp-selector'],
       });
@@ -172,7 +174,7 @@ schedule:
           sourceIdOrAll: 'mcp-selector',
         },
       });
-      expect(structuredContent<{ results: Array<{ sourceId: string; pageCount: number }> }>(fetch)).toMatchObject({
+      expect(toolData<{ results: Array<{ sourceId: string; pageCount: number }> }>(fetch)).toMatchObject({
         results: [
           expect.objectContaining({
             sourceId: 'mcp-selector',
@@ -184,11 +186,23 @@ schedule:
       const search = await client.callTool({
         name: 'search',
         arguments: {
-          query: 'maker flow',
+          query: 'selector',
           project: projectPath,
+          limit: 1,
+          offset: 0,
         },
       });
-      const searchData = structuredContent<{ results: Array<{ chunkId: number; sourceId: string }> }>(search);
+      const searchData = toolData<{
+        total: number;
+        limit: number;
+        offset: number;
+        hasMore: boolean;
+        results: Array<{ chunkId: number; sourceId: string }>;
+      }>(search);
+      expect(searchData.total).toBe(2);
+      expect(searchData.limit).toBe(1);
+      expect(searchData.offset).toBe(0);
+      expect(searchData.hasMore).toBe(true);
       expect(searchData.results[0]).toMatchObject({
         sourceId: 'mcp-selector',
       });
@@ -199,7 +213,107 @@ schedule:
           chunkId: searchData.results[0]?.chunkId,
         },
       });
-      expect(structuredContent<{ chunk: { markdown: string } }>(show).chunk.markdown).toContain('Maker flow documentation starts here.');
+      expect(toolData<{ chunk: { markdown: string } }>(show).chunk.markdown).toContain('Maker flow documentation starts here.');
+
+      const referencePath = join(root, 'mcp-reference.md');
+      writeFileSync(referencePath, `
+# Selector Start
+# Selector Next
+# Missing Heading
+`);
+
+      const verifyCoverage = await client.callTool({
+        name: 'verify_coverage',
+        arguments: {
+          sourceId: 'mcp-selector',
+          referenceFiles: [referencePath],
+        },
+      });
+      expect(toolData<{
+        sourceId: string;
+        complete: boolean;
+        summary: { missingHeadingCount: number };
+      }>(verifyCoverage)).toMatchObject({
+        sourceId: 'mcp-selector',
+        complete: false,
+        summary: {
+          missingHeadingCount: 1,
+        },
+      });
+
+      const missingShow = await client.callTool({
+        name: 'show',
+        arguments: {
+          chunkId: 99999,
+        },
+      });
+      expect(missingShow.isError).toBe(true);
+      expect(missingShow.structuredContent).toMatchObject({
+        ok: false,
+        error: {
+          code: 'CHUNK_NOT_FOUND',
+          message: 'Chunk 99999 not found',
+        },
+      });
+      expect((missingShow.structuredContent as {
+        ok: false;
+        error: { code: string; message: string };
+      }).error.code).toBe('CHUNK_NOT_FOUND');
+
+      const batch = await client.callTool({
+        name: 'batch',
+        arguments: {
+          operations: [
+            {
+              tool: 'version',
+            },
+            {
+              tool: 'show',
+              arguments: {
+                chunkId: 99999,
+              },
+            },
+            {
+              tool: 'show',
+              arguments: {},
+            },
+          ],
+        },
+      });
+      expect(toolData<{
+        results: Array<{
+          tool: string;
+          ok: boolean;
+          data?: unknown;
+          error?: { code: string; message: string };
+        }>;
+      }>(batch)).toMatchObject({
+        results: [
+          {
+            tool: 'version',
+            ok: true,
+            data: {
+              name: 'aiocs',
+              version: packageJson.version,
+            },
+          },
+          {
+            tool: 'show',
+            ok: false,
+            error: {
+              code: 'CHUNK_NOT_FOUND',
+              message: 'Chunk 99999 not found',
+            },
+          },
+          {
+            tool: 'show',
+            ok: false,
+            error: {
+              code: 'INVALID_ARGUMENT',
+            },
+          },
+        ],
+      });
     } finally {
       await client.close();
       await docsServer.close();

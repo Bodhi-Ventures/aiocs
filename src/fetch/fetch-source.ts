@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 
 import type { Catalog } from '../catalog/catalog.js';
+import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
 import { matchesPatterns } from './url-patterns.js';
 import { extractPage } from './extract.js';
 import { normalizeMarkdown } from './normalize.js';
@@ -139,7 +140,10 @@ async function fetchSourceOnce(input: FetchSourceInput): Promise<{
 }> {
   const spec = input.catalog.getSourceSpec(input.sourceId);
   if (!spec) {
-    throw new Error(`Unknown source '${input.sourceId}'`);
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.sourceNotFound,
+      `Unknown source '${input.sourceId}'`,
+    );
   }
 
   const browser = await chromium.launch({ headless: true });
@@ -270,7 +274,10 @@ async function fetchSourceOnce(input: FetchSourceInput): Promise<{
       .filter((page): page is FetchedPage => page !== undefined);
 
     if (pages.length === 0) {
-      throw new Error(`No pages fetched for source '${input.sourceId}'`);
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.noPagesFetched,
+        `No pages fetched for source '${input.sourceId}'`,
+      );
     }
 
     const result = input.catalog.recordSuccessfulSnapshot({

@@ -40,6 +40,7 @@ function parseJsonEnvelope(stdout: string) {
     command: string;
     data?: unknown;
     error?: {
+      code: string;
       message: string;
       details?: unknown;
     };
@@ -360,6 +361,10 @@ schedule:
           command: 'search',
         });
         expect(searchEnvelope.data).toMatchObject({
+          total: 1,
+          limit: 20,
+          offset: 0,
+          hasMore: false,
           results: [
             expect.objectContaining({
               sourceId: 'selector-json',
@@ -392,6 +397,116 @@ schedule:
   );
 
   it.each(['tsx', 'dist'] as const)(
+    'supports paginated search and coverage verification with %s runtime',
+    async (runtime) => {
+      const server = await startDocsServer();
+      const specPath = join(root, 'selector-verify.yaml');
+      const referencePath = join(root, 'selector-reference.md');
+      const projectPath = join(root, 'workspace', 'verifier');
+      mkdirSync(projectPath, { recursive: true });
+
+      writeFileSync(specPath, `
+id: selector-verify
+label: Selector Verify
+startUrls:
+  - ${server.baseUrl}/selector/start
+allowedHosts:
+  - 127.0.0.1
+discovery:
+  include:
+    - ${server.baseUrl}/selector/**
+  exclude: []
+  maxPages: 10
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+`);
+
+      writeFileSync(referencePath, `
+# Selector Start
+
+Maker flow documentation starts here.
+
+# Selector Next
+
+Second page content for market making docs.
+
+# Missing Heading
+`);
+
+      const env = {
+        ...process.env,
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      };
+
+      try {
+        const upsert = await runCli(runtime, ['--json', 'source', 'upsert', specPath], { cwd: root, env });
+        expect(upsert.exitCode).toBe(0);
+
+        const fetch = await runCli(runtime, ['--json', 'fetch', 'selector-verify'], { cwd: root, env });
+        expect(fetch.exitCode).toBe(0);
+
+        const link = await runCli(runtime, ['--json', 'project', 'link', projectPath, 'selector-verify'], { cwd: root, env });
+        expect(link.exitCode).toBe(0);
+
+        const search = await runCli(runtime, ['--json', 'search', 'selector', '--project', projectPath, '--limit', '1', '--offset', '1'], {
+          cwd: root,
+          env,
+        });
+        expect(search.exitCode).toBe(0);
+        expect(parseJsonEnvelope(search.stdout)).toMatchObject({
+          ok: true,
+          command: 'search',
+          data: {
+            total: 2,
+            limit: 1,
+            offset: 1,
+            hasMore: false,
+            results: [
+              expect.objectContaining({
+                sourceId: 'selector-verify',
+              }),
+            ],
+          },
+        });
+
+        const verifyCoverage = await runCli(runtime, ['--json', 'verify', 'coverage', 'selector-verify', referencePath], {
+          cwd: root,
+          env,
+        });
+        expect(verifyCoverage.exitCode).toBe(0);
+        expect(parseJsonEnvelope(verifyCoverage.stdout)).toMatchObject({
+          ok: true,
+          command: 'verify.coverage',
+          data: {
+            sourceId: 'selector-verify',
+            complete: false,
+            summary: {
+              headingCount: 3,
+              matchedHeadingCount: 2,
+              missingHeadingCount: 1,
+            },
+            files: [
+              expect.objectContaining({
+                referenceFile: referencePath,
+                missingHeadings: ['Missing Heading'],
+              }),
+            ],
+          },
+        });
+      } finally {
+        await server.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each(['tsx', 'dist'] as const)(
     'emits structured JSON envelopes for failure paths with %s runtime',
     async (runtime) => {
       const env = {
@@ -412,6 +527,7 @@ schedule:
         ok: false,
         command: 'search',
         error: {
+          code: 'NO_PROJECT_SCOPE',
           message: 'No linked project scope found. Use --source or --all.',
         },
       });
@@ -426,6 +542,7 @@ schedule:
         ok: false,
         command: 'show',
         error: {
+          code: 'CHUNK_NOT_FOUND',
           message: 'Chunk 99999 not found',
         },
       });

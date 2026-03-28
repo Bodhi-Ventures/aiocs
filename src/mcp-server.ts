@@ -4,6 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
+import { AiocsError, AIOCS_ERROR_CODES, toAiocsError } from './errors.js';
 import { packageDescription, packageName, packageVersion } from './runtime/package-metadata.js';
 import {
   fetchSources,
@@ -17,6 +18,7 @@ import {
   showChunk,
   unlinkProjectSources,
   upsertSourceFromSpecFile,
+  verifyCoverage,
 } from './services.js';
 
 const doctorCheckSchema = z.object({
@@ -62,6 +64,41 @@ const searchResultSchema = z.object({
   markdown: z.string(),
 });
 
+const mcpErrorSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  details: z.unknown().optional(),
+});
+
+const coverageVerificationSchema = z.object({
+  sourceId: z.string(),
+  snapshotId: z.string(),
+  complete: z.boolean(),
+  summary: z.object({
+    fileCount: z.number().int().nonnegative(),
+    headingCount: z.number().int().nonnegative(),
+    matchedHeadingCount: z.number().int().nonnegative(),
+    missingHeadingCount: z.number().int().nonnegative(),
+    matchCounts: z.object({
+      pageTitle: z.number().int().nonnegative(),
+      sectionTitle: z.number().int().nonnegative(),
+      body: z.number().int().nonnegative(),
+    }),
+  }),
+  files: z.array(z.object({
+    referenceFile: z.string(),
+    headingCount: z.number().int().nonnegative(),
+    matchedHeadingCount: z.number().int().nonnegative(),
+    missingHeadingCount: z.number().int().nonnegative(),
+    missingHeadings: z.array(z.string()),
+    matchCounts: z.object({
+      pageTitle: z.number().int().nonnegative(),
+      sectionTitle: z.number().int().nonnegative(),
+      body: z.number().int().nonnegative(),
+    }),
+  })),
+});
+
 const server = new McpServer({
   name: packageName,
   version: packageVersion,
@@ -70,19 +107,159 @@ const server = new McpServer({
   instructions: `${packageDescription} Use the MCP tools for machine-readable local docs operations.`,
 });
 
+const toolInputSchemas = new Map<string, z.ZodTypeAny | undefined>();
+
 function asToolResult<TData extends Record<string, unknown>>(data: TData) {
+  const structuredContent = {
+    ok: true as const,
+    data,
+  };
+
   return {
-    structuredContent: data,
+    structuredContent,
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(structuredContent, null, 2),
       },
     ],
   };
 }
 
-server.registerTool(
+function asToolError(error: unknown) {
+  const normalized = toAiocsError(error);
+  const structuredContent = {
+    ok: false as const,
+    error: {
+      code: normalized.code,
+      message: normalized.message,
+      ...(typeof normalized.details !== 'undefined' ? { details: normalized.details } : {}),
+    },
+  };
+
+  return {
+    isError: true as const,
+    structuredContent,
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(structuredContent, null, 2),
+      },
+    ],
+  };
+}
+
+type ToolHandler = (args: Record<string, unknown> | undefined) => Promise<Record<string, unknown>>;
+
+const toolHandlers: Record<string, ToolHandler> = {
+  version: async () => ({
+    name: packageName,
+    version: packageVersion,
+  }),
+  doctor: async () => getDoctorReport(),
+  init: async (args = {}) => initBuiltInSources({
+    ...(typeof args.fetch === 'boolean' ? { fetch: args.fetch } : {}),
+  }),
+  source_upsert: async (args = {}) => upsertSourceFromSpecFile(args.specFile as string),
+  source_list: async () => listSources(),
+  fetch: async (args = {}) => fetchSources(args.sourceIdOrAll as string),
+  refresh_due: async () => refreshDueSources(),
+  snapshot_list: async (args = {}) => listSnapshotsForSource(args.sourceId as string),
+  project_link: async (args = {}) =>
+    linkProjectSources(args.projectPath as string, args.sourceIds as string[]),
+  project_unlink: async (args = {}) =>
+    unlinkProjectSources(args.projectPath as string, (args.sourceIds as string[] | undefined) ?? []),
+  search: async (args = {}) => searchCatalog(args.query as string, {
+    source: (args.sourceIds as string[] | undefined) ?? [],
+    ...(typeof args.snapshotId === 'string' ? { snapshot: args.snapshotId } : {}),
+    ...(typeof args.all === 'boolean' ? { all: args.all } : {}),
+    ...(typeof args.project === 'string' ? { project: args.project } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+  }),
+  show: async (args = {}) => showChunk(args.chunkId as number),
+  verify_coverage: async (args = {}) =>
+    verifyCoverage({
+      sourceId: args.sourceId as string,
+      referenceFiles: args.referenceFiles as string[],
+      ...(typeof args.snapshotId === 'string' ? { snapshotId: args.snapshotId } : {}),
+    }),
+};
+
+type ToolHandlerName = keyof typeof toolHandlers;
+const batchableToolNames = Object.keys(toolHandlers) as ToolHandlerName[];
+
+async function runToolHandler(
+  name: ToolHandlerName,
+  args: Record<string, unknown> | undefined,
+) {
+  return toolHandlers[name]!(args);
+}
+
+function registerAiocsTool<TArgs extends Record<string, unknown>, TData extends Record<string, unknown>>(
+  name: ToolHandlerName,
+  config: {
+    title: string;
+    description: string;
+    inputSchema?: z.ZodType<TArgs>;
+    outputSchema: z.ZodType<TData>;
+  },
+) {
+  toolInputSchemas.set(name, config.inputSchema);
+
+  server.registerTool(
+    name,
+    {
+      ...config,
+      outputSchema: z.object({
+        ok: z.boolean(),
+        data: config.outputSchema.optional(),
+        error: mcpErrorSchema.optional(),
+      }),
+    },
+    async (args) => {
+      try {
+        return asToolResult(await runToolHandler(name, args as Record<string, unknown> | undefined));
+      } catch (error) {
+        return asToolError(error);
+      }
+    },
+  );
+}
+
+function formatZodIssues(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.join('.') : 'input';
+      return `${path}: ${issue.message}`;
+    })
+    .join('; ');
+}
+
+function validateBatchOperationArguments(
+  tool: ToolHandlerName,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const schema = toolInputSchemas.get(tool);
+  if (!schema) {
+    return args;
+  }
+
+  const parsed = schema.safeParse(args);
+  if (!parsed.success) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.invalidArgument,
+      `Invalid arguments for tool ${tool}: ${formatZodIssues(parsed.error)}`,
+      {
+        issues: parsed.error.issues,
+      },
+    );
+  }
+
+  return parsed.data as Record<string, unknown>;
+}
+
+registerAiocsTool(
   'version',
   {
     title: 'Version',
@@ -92,23 +269,18 @@ server.registerTool(
       version: z.string(),
     }),
   },
-  async () => asToolResult({
-    name: packageName,
-    version: packageVersion,
-  }),
 );
 
-server.registerTool(
+registerAiocsTool(
   'doctor',
   {
     title: 'Doctor',
     description: 'Validate catalog, Playwright, daemon config, source-spec directories, and Docker readiness.',
     outputSchema: doctorReportSchema,
   },
-  async () => asToolResult(await getDoctorReport()),
 );
 
-server.registerTool(
+registerAiocsTool(
   'init',
   {
     title: 'Init',
@@ -129,10 +301,9 @@ server.registerTool(
       fetchResults: z.array(fetchResultSchema),
     }),
   },
-  async ({ fetch = false }) => asToolResult(await initBuiltInSources({ fetch })),
 );
 
-server.registerTool(
+registerAiocsTool(
   'source_upsert',
   {
     title: 'Source upsert',
@@ -146,10 +317,9 @@ server.registerTool(
       specPath: z.string(),
     }),
   },
-  async ({ specFile }) => asToolResult(await upsertSourceFromSpecFile(specFile)),
 );
 
-server.registerTool(
+registerAiocsTool(
   'source_list',
   {
     title: 'Source list',
@@ -158,10 +328,9 @@ server.registerTool(
       sources: z.array(sourceSchema),
     }),
   },
-  async () => asToolResult(await listSources()),
 );
 
-server.registerTool(
+registerAiocsTool(
   'fetch',
   {
     title: 'Fetch',
@@ -173,10 +342,9 @@ server.registerTool(
       results: z.array(fetchResultSchema),
     }),
   },
-  async ({ sourceIdOrAll }) => asToolResult(await fetchSources(sourceIdOrAll)),
 );
 
-server.registerTool(
+registerAiocsTool(
   'refresh_due',
   {
     title: 'Refresh due',
@@ -185,10 +353,9 @@ server.registerTool(
       results: z.array(fetchResultSchema),
     }),
   },
-  async () => asToolResult(await refreshDueSources()),
 );
 
-server.registerTool(
+registerAiocsTool(
   'snapshot_list',
   {
     title: 'Snapshot list',
@@ -207,10 +374,9 @@ server.registerTool(
       })),
     }),
   },
-  async ({ sourceId }) => asToolResult(await listSnapshotsForSource(sourceId)),
 );
 
-server.registerTool(
+registerAiocsTool(
   'project_link',
   {
     title: 'Project link',
@@ -224,10 +390,9 @@ server.registerTool(
       sourceIds: z.array(z.string()),
     }),
   },
-  async ({ projectPath, sourceIds }) => asToolResult(await linkProjectSources(projectPath, sourceIds)),
 );
 
-server.registerTool(
+registerAiocsTool(
   'project_unlink',
   {
     title: 'Project unlink',
@@ -241,10 +406,9 @@ server.registerTool(
       sourceIds: z.array(z.string()),
     }),
   },
-  async ({ projectPath, sourceIds }) => asToolResult(await unlinkProjectSources(projectPath, sourceIds ?? [])),
 );
 
-server.registerTool(
+registerAiocsTool(
   'search',
   {
     title: 'Search',
@@ -255,21 +419,21 @@ server.registerTool(
       snapshotId: z.string().optional(),
       all: z.boolean().optional(),
       project: z.string().optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
     }),
     outputSchema: z.object({
       query: z.string(),
+      total: z.number().int().nonnegative(),
+      limit: z.number().int().positive(),
+      offset: z.number().int().nonnegative(),
+      hasMore: z.boolean(),
       results: z.array(searchResultSchema),
     }),
   },
-  async ({ query, sourceIds, snapshotId, all, project }) => asToolResult(await searchCatalog(query, {
-    source: sourceIds ?? [],
-    ...(snapshotId ? { snapshot: snapshotId } : {}),
-    ...(all !== undefined ? { all } : {}),
-    ...(project ? { project } : {}),
-  })),
 );
 
-server.registerTool(
+registerAiocsTool(
   'show',
   {
     title: 'Show',
@@ -281,7 +445,95 @@ server.registerTool(
       chunk: searchResultSchema,
     }),
   },
-  async ({ chunkId }) => asToolResult(await showChunk(chunkId)),
+);
+
+registerAiocsTool(
+  'verify_coverage',
+  {
+    title: 'Verify coverage',
+    description: 'Verify a fetched source snapshot against one or more reference markdown files.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+      referenceFiles: z.array(z.string()).min(1),
+      snapshotId: z.string().optional(),
+    }),
+    outputSchema: coverageVerificationSchema,
+  },
+);
+
+server.registerTool(
+  'batch',
+  {
+    title: 'Batch',
+    description: 'Execute multiple aiocs MCP operations in one call and return per-operation success or error results.',
+    inputSchema: z.object({
+      operations: z.array(z.object({
+        tool: z.string().refine(
+          (value): value is ToolHandlerName => batchableToolNames.includes(value as ToolHandlerName),
+          {
+            message: `tool must be one of: ${batchableToolNames.join(', ')}`,
+          },
+        ),
+        arguments: z.record(z.string(), z.unknown()).optional(),
+      })).min(1).max(25),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      data: z.object({
+        results: z.array(z.object({
+          index: z.number().int().nonnegative(),
+          tool: z.string(),
+          ok: z.boolean(),
+          data: z.unknown().optional(),
+          error: z.object({
+            code: z.string(),
+            message: z.string(),
+            details: z.unknown().optional(),
+          }).optional(),
+        })),
+      }).optional(),
+      error: mcpErrorSchema.optional(),
+    }),
+  },
+  async ({ operations }) => {
+    try {
+      const results = [];
+      for (const [index, operation] of operations.entries()) {
+        try {
+          const validatedArgs = validateBatchOperationArguments(
+            operation.tool,
+            (operation.arguments ?? {}) as Record<string, unknown>,
+          );
+          const data = await runToolHandler(
+            operation.tool,
+            validatedArgs,
+          );
+          results.push({
+            index,
+            tool: operation.tool,
+            ok: true,
+            data,
+          });
+        } catch (error) {
+          const normalized = toAiocsError(error);
+          results.push({
+            index,
+            tool: operation.tool,
+            ok: false,
+            error: {
+              code: normalized.code,
+              message: normalized.message,
+              ...(typeof normalized.details !== 'undefined' ? { details: normalized.details } : {}),
+            },
+          });
+        }
+      }
+
+      return asToolResult({ results });
+    } catch (error) {
+      return asToolError(error);
+    }
+  },
 );
 
 async function main(): Promise<void> {

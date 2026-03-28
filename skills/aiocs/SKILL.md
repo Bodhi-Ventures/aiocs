@@ -42,6 +42,7 @@ Search the shared catalog:
 ```bash
 docs --json search "maker flow" --source hyperliquid
 docs --json search "maker flow" --all
+docs --json search "maker flow" --source hyperliquid --limit 5 --offset 0
 ```
 
 Inspect a specific chunk:
@@ -56,6 +57,12 @@ Refresh the catalog:
 docs --json refresh due
 docs --json fetch hyperliquid
 docs --json fetch all
+```
+
+Verify fetched coverage against reference markdown:
+
+```bash
+docs --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 Scope docs to a project path:
@@ -81,10 +88,14 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `project_unlink`
 - `search`
 - `show`
+- `verify_coverage`
+- `batch`
 
 ## Operational notes
 
 - The catalog is local-only and shared across projects on the same machine.
 - Default state root: `~/.aiocs/data` and `~/.aiocs/config`.
 - Use `docs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
+- CLI failures expose machine-readable `error.code` fields in `--json` mode.
+- MCP tool results use `{ ok, data?, error? }` envelopes, and `batch` can reduce multiple small MCP round trips.
 - For exact CLI payloads, see `/Users/jmucha/repos/mandex/aiocs/docs/json-contract.md`.

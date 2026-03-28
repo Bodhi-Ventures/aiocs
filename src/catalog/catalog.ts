@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { chunkMarkdown } from './chunking.js';
 import { buildSnapshotFingerprint, sha256 } from './fingerprint.js';
 import { canonicalizeProjectPath, resolveProjectScope } from './project-scope.js';
+import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
 import type { SourceSpec } from '../spec/source-spec.js';
 
 type OpenCatalogOptions = {
@@ -31,6 +32,8 @@ type SearchInput = {
   sourceIds?: string[];
   snapshotId?: string;
   all?: boolean;
+  limit?: number;
+  offset?: number;
 };
 
 type SearchRow = {
@@ -181,6 +184,32 @@ function normalizeQuery(query: string): string {
     .filter(Boolean);
 
   return words.join(' ');
+}
+
+function assertPaginationValue(
+  value: number | undefined,
+  field: 'limit' | 'offset',
+  fallback: number,
+): number {
+  if (typeof value === 'undefined') {
+    return fallback;
+  }
+
+  if (!Number.isInteger(value) || value < 0) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.invalidArgument,
+      `${field} must be a non-negative integer`,
+    );
+  }
+
+  if (field === 'limit' && value === 0) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.invalidArgument,
+      'limit must be greater than zero',
+    );
+  }
+
+  return value;
 }
 
 export function openCatalog(options: OpenCatalogOptions) {
@@ -346,7 +375,10 @@ export function openCatalog(options: OpenCatalogOptions) {
         .get(input.sourceId) as { config_hash: string; spec_json: string } | undefined;
 
       if (!sourceRow) {
-        throw new Error(`Unknown source '${input.sourceId}'`);
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
       }
 
       const pagesWithHashes = input.pages.map((page) => ({
@@ -462,7 +494,10 @@ export function openCatalog(options: OpenCatalogOptions) {
         .get(input.sourceId) as { spec_json: string } | undefined;
 
       if (!sourceRow) {
-        throw new Error(`Unknown source '${input.sourceId}'`);
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
       }
 
       const spec = JSON.parse(sourceRow.spec_json) as SourceSpec;
@@ -554,11 +589,25 @@ export function openCatalog(options: OpenCatalogOptions) {
       }));
     },
 
-    search(input: SearchInput): SearchRow[] {
+    search(input: SearchInput): {
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+      results: SearchRow[];
+    } {
       const normalized = normalizeQuery(input.query);
       if (!normalized) {
-        return [];
+        return {
+          total: 0,
+          limit: assertPaginationValue(input.limit, 'limit', 20),
+          offset: assertPaginationValue(input.offset, 'offset', 0),
+          hasMore: false,
+          results: [],
+        };
       }
+      const limit = assertPaginationValue(input.limit, 'limit', 20);
+      const offset = assertPaginationValue(input.offset, 'offset', 0);
 
       let sourceIds = input.sourceIds ? [...input.sourceIds] : undefined;
       if (!sourceIds || sourceIds.length === 0) {
@@ -577,7 +626,13 @@ export function openCatalog(options: OpenCatalogOptions) {
       }
 
       if ((!sourceIds || sourceIds.length === 0) && !input.all) {
-        return [];
+        return {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+          results: [],
+        };
       }
 
       const filterSourceIds = sourceIds && sourceIds.length > 0 ? [...new Set(sourceIds)] : null;
@@ -591,11 +646,30 @@ export function openCatalog(options: OpenCatalogOptions) {
           `).all(...(filterSourceIds ?? [])) as Array<{ snapshot_id: string }>).map((row) => row.snapshot_id);
 
       if (latestSnapshotIds.length === 0) {
-        return [];
+        return {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+          results: [],
+        };
       }
 
       const whereSnapshotPlaceholders = latestSnapshotIds.map(() => '?').join(',');
       const sourceSql = filterSourceIds ? `AND c.source_id IN (${filterSourceIds.map(() => '?').join(',')})` : '';
+      const queryArgs = [
+        normalized,
+        ...latestSnapshotIds,
+        ...(filterSourceIds ?? []),
+      ];
+      const totalRow = db.prepare(`
+        SELECT COUNT(*) AS total
+        FROM chunks_fts
+        JOIN chunks c ON c.id = chunks_fts.rowid
+        WHERE chunks_fts MATCH ?
+          AND c.snapshot_id IN (${whereSnapshotPlaceholders})
+          ${sourceSql}
+      `).get(...queryArgs) as { total: number };
       const statement = db.prepare(`
         SELECT
           c.id AS chunk_id,
@@ -610,14 +684,15 @@ export function openCatalog(options: OpenCatalogOptions) {
         WHERE chunks_fts MATCH ?
           AND c.snapshot_id IN (${whereSnapshotPlaceholders})
           ${sourceSql}
-        ORDER BY bm25(chunks_fts)
-        LIMIT 20
+        ORDER BY bm25(chunks_fts), c.id
+        LIMIT ?
+        OFFSET ?
       `);
 
       const rows = statement.all(
-        normalized,
-        ...latestSnapshotIds,
-        ...(filterSourceIds ?? []),
+        ...queryArgs,
+        limit,
+        offset,
       ) as Array<{
         chunk_id: number;
         source_id: string;
@@ -628,7 +703,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         markdown: string;
       }>;
 
-      return rows.map((row) => ({
+      const results = rows.map((row) => ({
         chunkId: row.chunk_id,
         sourceId: row.source_id,
         snapshotId: row.snapshot_id,
@@ -637,6 +712,78 @@ export function openCatalog(options: OpenCatalogOptions) {
         sectionTitle: row.section_title,
         markdown: row.markdown,
       }));
+
+      return {
+        total: totalRow.total,
+        limit,
+        offset,
+        hasMore: offset + results.length < totalRow.total,
+        results,
+      };
+    },
+
+    getCoverageCorpus(input: {
+      sourceId: string;
+      snapshotId?: string;
+    }): {
+      sourceId: string;
+      snapshotId: string;
+      entries: Array<{
+        pageTitle: string;
+        sectionTitle: string;
+        markdown: string;
+      }>;
+    } {
+      const sourceRow = db
+        .prepare('SELECT last_successful_snapshot_id FROM sources WHERE id = ?')
+        .get(input.sourceId) as { last_successful_snapshot_id: string | null } | undefined;
+
+      if (!sourceRow) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
+      }
+
+      const snapshotId = input.snapshotId ?? sourceRow.last_successful_snapshot_id;
+      if (!snapshotId) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `No successful snapshot found for source '${input.sourceId}'`,
+        );
+      }
+
+      const snapshotRow = db
+        .prepare('SELECT id FROM snapshots WHERE id = ? AND source_id = ?')
+        .get(snapshotId, input.sourceId) as { id: string } | undefined;
+      if (!snapshotRow) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `Snapshot '${snapshotId}' not found for source '${input.sourceId}'`,
+        );
+      }
+
+      const rows = db.prepare(`
+        SELECT page_title, section_title, markdown
+        FROM chunks
+        WHERE source_id = ?
+          AND snapshot_id = ?
+        ORDER BY page_id, chunk_order
+      `).all(input.sourceId, snapshotId) as Array<{
+        page_title: string;
+        section_title: string;
+        markdown: string;
+      }>;
+
+      return {
+        sourceId: input.sourceId,
+        snapshotId,
+        entries: rows.map((row) => ({
+          pageTitle: row.page_title,
+          sectionTitle: row.section_title,
+          markdown: row.markdown,
+        })),
+      };
     },
 
     getChunkById(chunkId: number): ChunkRecord | null {

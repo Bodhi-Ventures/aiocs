@@ -58,8 +58,8 @@ describe('fetchSource', () => {
         sourceIds: [spec.id],
       });
 
-      expect(searchResults).toHaveLength(1);
-      expect(searchResults[0]?.snapshotId).toBe(result.snapshotId);
+      expect(searchResults.results).toHaveLength(1);
+      expect(searchResults.results[0]?.snapshotId).toBe(result.snapshotId);
     } finally {
       await server.close();
       catalog.close();
@@ -130,10 +130,10 @@ describe('fetchSource', () => {
       expect(readabilityResult.pageCount).toBe(1);
 
       expect(
-        catalog.search({ query: 'clipboard-driven maker flow', sourceIds: [clipboardSpec.id] }),
+        catalog.search({ query: 'clipboard-driven maker flow', sourceIds: [clipboardSpec.id] }).results,
       ).toHaveLength(1);
       expect(
-        catalog.search({ query: 'fallback extraction', sourceIds: [readabilitySpec.id] }),
+        catalog.search({ query: 'fallback extraction', sourceIds: [readabilitySpec.id] }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -181,7 +181,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'this markdown asset should be ingested directly',
           sourceIds: [spec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -223,7 +223,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'only the valid page should be indexed',
           sourceIds: [spec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -265,7 +265,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'gitbook internal export pages should be ignored',
           sourceIds: [spec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -307,7 +307,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'this content should only appear once in the catalog',
           sourceIds: [spec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -349,13 +349,13 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'canonical html content should win when mirrors compete',
           sourceIds: [spec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
       expect(
         catalog.search({
           query: 'raw mirror content should not replace the canonical html page',
           sourceIds: [spec.id],
-        }),
+        }).results,
       ).toHaveLength(0);
     } finally {
       await server.close();
@@ -411,7 +411,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'desktop-only markdown copy flow docs',
           sourceIds: [clipboardSpec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -459,7 +459,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'clipboard content stays identical across repeated copies',
           sourceIds: [clipboardSpec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -507,7 +507,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'clipboard copy succeeds after the first interaction does nothing',
           sourceIds: [clipboardSpec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -560,7 +560,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'follow-up copy control appears after the first full menu sequence fails',
           sourceIds: [clipboardSpec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();
@@ -609,7 +609,7 @@ describe('fetchSource', () => {
         catalog.search({
           query: 'slow controls can still be handled with longer interaction timeouts',
           sourceIds: [clipboardSpec.id],
-        }),
+        }).results,
       ).toHaveLength(1);
     } finally {
       await server.close();

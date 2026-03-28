@@ -1,6 +1,8 @@
 import { resolve } from 'node:path';
 
 import { openCatalog } from './catalog/catalog.js';
+import { verifyCoverageAgainstReferences, type CoverageVerificationResult } from './coverage.js';
+import { AiocsError, AIOCS_ERROR_CODES } from './errors.js';
 import { resolveProjectScope } from './catalog/project-scope.js';
 import { bootstrapSourceSpecs } from './daemon.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
@@ -14,6 +16,8 @@ export type SearchOptions = {
   snapshot?: string;
   all?: boolean;
   project?: string;
+  limit?: number;
+  offset?: number;
 };
 
 type CatalogContext = {
@@ -172,6 +176,10 @@ export async function unlinkProjectSources(projectPath: string, sourceIds: strin
 
 export async function searchCatalog(query: string, options: SearchOptions): Promise<{
   query: string;
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
   results: Array<{
     chunkId: number;
     sourceId: string;
@@ -188,7 +196,10 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
     const scope = resolveProjectScope(cwd, catalog.listProjectLinks());
 
     if (!explicitSources && !options.all && !scope) {
-      throw new Error('No linked project scope found. Use --source or --all.');
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.noProjectScope,
+        'No linked project scope found. Use --source or --all.',
+      );
     }
 
     return catalog.search({
@@ -197,12 +208,18 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
       ...(explicitSources ? { sourceIds: options.source } : {}),
       ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
       ...(options.all ? { all: true } : {}),
+      ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
+      ...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
     });
   });
 
   return {
     query,
-    results,
+    total: results.total,
+    limit: results.limit,
+    offset: results.offset,
+    hasMore: results.hasMore,
+    results: results.results,
   };
 }
 
@@ -219,10 +236,28 @@ export async function showChunk(chunkId: number): Promise<{
 }> {
   const chunk = await withCatalog(({ catalog }) => catalog.getChunkById(chunkId));
   if (!chunk) {
-    throw new Error(`Chunk ${chunkId} not found`);
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.chunkNotFound,
+      `Chunk ${chunkId} not found`,
+    );
   }
 
   return { chunk };
+}
+
+export async function verifyCoverage(input: {
+  sourceId: string;
+  referenceFiles: string[];
+  snapshotId?: string;
+}): Promise<CoverageVerificationResult> {
+  return withCatalog(async ({ catalog }) => {
+    const corpus = catalog.getCoverageCorpus({
+      sourceId: input.sourceId,
+      ...(input.snapshotId ? { snapshotId: input.snapshotId } : {}),
+    });
+
+    return verifyCoverageAgainstReferences(corpus, input.referenceFiles);
+  });
 }
 
 export async function initBuiltInSources(options?: {

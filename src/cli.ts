@@ -15,6 +15,10 @@ import { startDaemon, parseDaemonConfig, type DaemonEvent } from './daemon.js';
 import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
 import { packageName, packageVersion } from './runtime/package-metadata.js';
 import {
+  AiocsError,
+  AIOCS_ERROR_CODES,
+} from './errors.js';
+import {
   fetchSources,
   getDoctorReport,
   initBuiltInSources,
@@ -26,6 +30,7 @@ import {
   type SearchOptions,
   unlinkProjectSources,
   upsertSourceFromSpecFile,
+  verifyCoverage,
   refreshDueSources,
 } from './services.js';
 
@@ -54,6 +59,32 @@ function renderSearchResult(result: {
     result.markdown,
     '',
   ].join('\n');
+}
+
+function parsePositiveIntegerOption(
+  value: string | undefined,
+  field: 'limit' | 'offset',
+): number | undefined {
+  if (typeof value === 'undefined') {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.invalidArgument,
+      `${field} must be a non-negative integer`,
+    );
+  }
+
+  if (field === 'limit' && parsed === 0) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.invalidArgument,
+      'limit must be greater than zero',
+    );
+  }
+
+  return parsed;
 }
 
 async function executeCommand<TData>(
@@ -375,19 +406,74 @@ program
   .option('--snapshot <snapshot-id>', 'search a specific snapshot')
   .option('--all', 'search across all latest snapshots')
   .option('--project <path>', 'resolve search scope as if running from this path')
-  .action(async (query: string, options: SearchOptions, command: Command) => {
+  .option('--limit <count>', 'maximum number of results to return')
+  .option('--offset <count>', 'number of results to skip before returning matches')
+  .action(async (
+    query: string,
+    options: SearchOptions & { limit?: string; offset?: string },
+    command: Command,
+  ) => {
     await executeCommand(command, 'search', async () => {
-      const result = await searchCatalog(query, options);
+      const limit = parsePositiveIntegerOption(options.limit, 'limit');
+      const offset = parsePositiveIntegerOption(options.offset, 'offset');
+      const result = await searchCatalog(query, {
+        source: options.source,
+        ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+        ...(typeof options.all !== 'undefined' ? { all: options.all } : {}),
+        ...(options.project ? { project: options.project } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+        ...(typeof offset === 'number' ? { offset } : {}),
+      });
       const results = result.results;
 
       return {
         data: result,
         human: results.length === 0
           ? `No results for "${query}"`
-          : results.map((result) => renderSearchResult(result)),
+          : [
+            `Showing ${result.offset + 1}-${result.offset + results.length} of ${result.total} result(s) for "${query}"`,
+            ...results.map((entry) => renderSearchResult(entry)),
+          ],
       };
     });
   });
+
+const verify = program.command('verify');
+verify
+  .command('coverage')
+  .argument('<source-id>')
+  .argument('<reference-files...>')
+  .option('--snapshot <snapshot-id>', 'verify a specific snapshot instead of the latest successful snapshot')
+  .action(
+    async (
+      sourceId: string,
+      referenceFiles: string[],
+      options: { snapshot?: string },
+      command: Command,
+    ) => {
+      await executeCommand(command, 'verify.coverage', async () => {
+        const result = await verifyCoverage({
+          sourceId,
+          referenceFiles,
+          ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
+        });
+
+        return {
+          data: result,
+          human: [
+            `Coverage ${result.complete ? 'complete' : 'incomplete'} for ${result.sourceId} @ ${result.snapshotId}`,
+            `Files=${result.summary.fileCount} | headings=${result.summary.headingCount} | matched=${result.summary.matchedHeadingCount} | missing=${result.summary.missingHeadingCount}`,
+            ...result.files.flatMap((file) => file.missingHeadings.length > 0
+              ? [
+                  `Missing in ${file.referenceFile}:`,
+                  ...file.missingHeadings.map((heading) => `- ${heading}`),
+                ]
+              : [`No missing headings in ${file.referenceFile}`]),
+          ],
+        };
+      });
+    },
+  );
 
 program
   .command('show')

@@ -64,6 +64,10 @@ pnpm dev -- --json show 42
   "ok": true,
   "command": "search",
   "data": {
+    "total": 0,
+    "limit": 20,
+    "offset": 0,
+    "hasMore": false,
     "results": []
   }
 }
@@ -76,6 +80,7 @@ Failures still exit with status `1`, but emit a JSON error document instead of h
   "ok": false,
   "command": "show",
   "error": {
+    "code": "CHUNK_NOT_FOUND",
     "message": "Chunk 42 not found"
   }
 }
@@ -137,7 +142,9 @@ Search and inspect results:
 ```bash
 pnpm dev -- search "maker flow" --source hyperliquid
 pnpm dev -- search "maker flow" --all
+pnpm dev -- search "maker flow" --source hyperliquid --limit 5 --offset 0
 pnpm dev -- show 42
+pnpm dev -- verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
@@ -157,6 +164,7 @@ All one-shot commands support `--json`:
 - `project link`
 - `project unlink`
 - `search`
+- `verify coverage`
 - `show`
 
 Representative examples:
@@ -169,15 +177,21 @@ pnpm dev -- --json fetch hyperliquid
 pnpm dev -- --json refresh due
 pnpm dev -- --json project link /absolute/path/to/project hyperliquid lighter
 pnpm dev -- --json snapshot list hyperliquid
+pnpm dev -- --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
-For multi-result commands like `fetch`, `refresh due`, and `search`, `data` contains arrays rather than line-by-line output:
+For multi-result commands like `fetch`, `refresh due`, and `search`, `data` contains structured collections rather than line-by-line output:
 
 ```json
 {
   "ok": true,
-  "command": "refresh.due",
+  "command": "search",
   "data": {
+    "query": "maker flow",
+    "total": 42,
+    "limit": 20,
+    "offset": 0,
+    "hasMore": true,
     "results": []
   }
 }
@@ -251,6 +265,32 @@ The MCP server exposes the same shared operations as the CLI without shell parsi
 - `project_unlink`
 - `search`
 - `show`
+- `verify_coverage`
+- `batch`
+
+Successful MCP results use an envelope:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "name": "aiocs",
+    "version": "0.1.0"
+  }
+}
+```
+
+Failed MCP results use the same machine-readable error shape:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "CHUNK_NOT_FOUND",
+    "message": "Chunk 42 not found"
+  }
+}
+```
 
 ## Docker
 
