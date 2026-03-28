@@ -1,13 +1,14 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import packageJson from '../../package.json' with { type: 'json' };
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { startDocsServer } from '../helpers/docs-server.js';
 
-const repoRoot = '/Users/jmucha/repos/mandex/aiocs';
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const cliPath = `${repoRoot}/src/cli.ts`;
 const tsxPath = `${repoRoot}/node_modules/.bin/tsx`;
 const distCliPath = `${repoRoot}/dist/cli.js`;

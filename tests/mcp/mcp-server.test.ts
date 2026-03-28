@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -9,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import packageJson from '../../package.json' with { type: 'json' };
 import { startDocsServer } from '../helpers/docs-server.js';
 
-const repoRoot = '/Users/jmucha/repos/mandex/aiocs';
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const distMcpPath = `${repoRoot}/dist/mcp-server.js`;
 
 function stringEnv(extra: Record<string, string>): Record<string, string> {
