@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import type { Catalog } from './catalog/catalog.js';
-import { fetchSource } from './fetch/fetch-source.js';
+import { fetchSource, runSourceCanary } from './fetch/fetch-source.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { pathExists, uniqueResolvedPaths, walkSourceSpecFiles } from './spec/source-spec-files.js';
@@ -44,11 +44,30 @@ export type FailedRefresh = {
   errorMessage: string;
 };
 
+export type CanariedSource = {
+  sourceId: string;
+  status: 'pass' | 'fail';
+  checkedAt: string;
+  summary: {
+    checkCount: number;
+    passCount: number;
+    failCount: number;
+  };
+};
+
+export type FailedCanary = {
+  sourceId: string;
+  errorMessage: string;
+};
+
 export type DaemonCycleResult = {
   startedAt: string;
   finishedAt: string;
   dueSourceIds: string[];
+  canaryDueSourceIds: string[];
   bootstrapped: BootstrapResult;
+  canaried: CanariedSource[];
+  canaryFailed: FailedCanary[];
   refreshed: RefreshedSource[];
   failed: FailedRefresh[];
 };
@@ -236,8 +255,46 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
       ...bootstrapped.sources.filter((source) => source.configChanged).map((source) => source.sourceId),
     ]),
   ];
+  const canaryDueSourceIds = [
+    ...new Set([
+      ...input.catalog.listCanaryDueSourceIds(input.referenceTime ?? startedAt),
+      ...bootstrapped.sources.filter((source) => source.configChanged).map((source) => source.sourceId),
+      ...input.catalog.listSources()
+        .filter((source) => source.lastCanaryCheckedAt === null)
+        .map((source) => source.id),
+    ]),
+  ];
+  const canaried: CanariedSource[] = [];
+  const canaryFailed: FailedCanary[] = [];
   const refreshed: RefreshedSource[] = [];
   const failed: FailedRefresh[] = [];
+
+  for (const sourceId of canaryDueSourceIds) {
+    try {
+      const result = await runSourceCanary({
+        catalog: input.catalog,
+        sourceId,
+        env: process.env,
+      });
+      canaried.push({
+        sourceId,
+        status: result.status,
+        checkedAt: result.checkedAt,
+        summary: result.summary,
+      });
+      if (result.status === 'fail') {
+        canaryFailed.push({
+          sourceId,
+          errorMessage: `One or more canary checks failed for ${sourceId}`,
+        });
+      }
+    } catch (error) {
+      canaryFailed.push({
+        sourceId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   for (const sourceId of dueSourceIds) {
     try {
@@ -265,7 +322,10 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
     startedAt,
     finishedAt: nowIso(),
     dueSourceIds,
+    canaryDueSourceIds,
     bootstrapped,
+    canaried,
+    canaryFailed,
     refreshed,
     failed,
   };
@@ -273,6 +333,11 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
 
 export async function startDaemon(input: StartDaemonInput): Promise<void> {
   const intervalMs = input.config.intervalMinutes * 60_000;
+  input.catalog.markDaemonStarted({
+    startedAt: nowIso(),
+    intervalMinutes: input.config.intervalMinutes,
+    fetchOnStart: input.config.fetchOnStart,
+  });
   input.logger.emit({
     type: 'daemon.started',
     intervalMinutes: input.config.intervalMinutes,
@@ -282,23 +347,36 @@ export async function startDaemon(input: StartDaemonInput): Promise<void> {
 
   const runCycle = async (reason: 'startup' | 'interval') => {
     const startedAt = nowIso();
+    input.catalog.markDaemonCycleStarted(startedAt);
     input.logger.emit({
       type: 'daemon.cycle.started',
       reason,
       startedAt,
     });
-    const result = await runDaemonCycle({
-      catalog: input.catalog,
-      dataDir: input.dataDir,
-      sourceSpecDirs: input.config.sourceSpecDirs,
-      strictSourceSpecDirs: input.config.strictSourceSpecDirs,
-      referenceTime: startedAt,
-    });
-    input.logger.emit({
-      type: 'daemon.cycle.completed',
-      reason,
-      result,
-    });
+    try {
+      const result = await runDaemonCycle({
+        catalog: input.catalog,
+        dataDir: input.dataDir,
+        sourceSpecDirs: input.config.sourceSpecDirs,
+        strictSourceSpecDirs: input.config.strictSourceSpecDirs,
+        referenceTime: startedAt,
+      });
+      input.catalog.markDaemonCycleCompleted({
+        completedAt: result.finishedAt,
+        status: result.failed.length > 0 || result.canaryFailed.length > 0 ? 'degraded' : 'success',
+      });
+      input.logger.emit({
+        type: 'daemon.cycle.completed',
+        reason,
+        result,
+      });
+    } catch (error) {
+      input.catalog.markDaemonCycleCompleted({
+        completedAt: nowIso(),
+        status: 'failed',
+      });
+      throw error;
+    }
   };
 
   if (input.config.fetchOnStart && !input.signal?.aborted) {

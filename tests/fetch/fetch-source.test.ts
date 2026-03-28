@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openCatalog } from '../../src/catalog/catalog.js';
-import { fetchSource } from '../../src/fetch/fetch-source.js';
+import { applyScopedAuthHeaders, fetchSource, runSourceCanary } from '../../src/fetch/fetch-source.js';
 import { parseSourceSpecObject, type SourceSpec } from '../../src/spec/source-spec.js';
 import { startDocsServer } from '../helpers/docs-server.js';
 
@@ -135,6 +135,227 @@ describe('fetchSource', () => {
       expect(
         catalog.search({ query: 'fallback extraction', sourceIds: [readabilitySpec.id] }).results,
       ).toHaveLength(1);
+    } finally {
+      await server.close();
+      catalog.close();
+    }
+  });
+
+  it('supports authenticated fetches with environment-backed headers and cookies', async () => {
+    const server = await startDocsServer();
+    const catalog = openCatalog({ dataDir: root });
+
+    const spec = parseSourceSpecObject({
+      id: 'authenticated-source',
+      label: 'Authenticated Source',
+      startUrls: [`${server.baseUrl}/auth/start`],
+      allowedHosts: ['127.0.0.1'],
+      discovery: {
+        include: [`${server.baseUrl}/auth/**`],
+        exclude: [],
+        maxPages: 10,
+      },
+      extract: {
+        strategy: 'selector',
+        selector: 'article',
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+      auth: {
+        headers: [
+          {
+            name: 'x-aiocs-token',
+            valueFromEnv: 'AIOCS_TEST_HEADER_TOKEN',
+          },
+        ],
+        cookies: [
+          {
+            name: 'aiocs_session',
+            valueFromEnv: 'AIOCS_TEST_COOKIE_TOKEN',
+            domain: '127.0.0.1',
+            path: '/',
+          },
+        ],
+      },
+    });
+
+    try {
+      catalog.upsertSource(spec);
+
+      const result = await fetchSource({
+        catalog,
+        sourceId: spec.id,
+        dataDir: root,
+        env: {
+          ...process.env,
+          AIOCS_TEST_HEADER_TOKEN: 'header-secret',
+          AIOCS_TEST_COOKIE_TOKEN: 'cookie-secret',
+        },
+      });
+
+      expect(result.pageCount).toBe(1);
+      expect(
+        catalog.search({
+          query: 'secret market structure docs',
+          sourceIds: [spec.id],
+        }).results,
+      ).toHaveLength(1);
+    } finally {
+      await server.close();
+      catalog.close();
+    }
+  });
+
+  it('scopes authenticated headers to the source allowed hosts only', () => {
+    const spec = parseSourceSpecObject({
+      id: 'scoped-auth-source',
+      label: 'Scoped Auth Source',
+      startUrls: ['https://docs.example.com/start'],
+      allowedHosts: ['docs.example.com'],
+      discovery: {
+        include: ['https://docs.example.com/**'],
+        exclude: [],
+        maxPages: 10,
+      },
+      extract: {
+        strategy: 'selector',
+        selector: 'article',
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+      auth: {
+        headers: [
+          {
+            name: 'x-aiocs-token',
+            valueFromEnv: 'AIOCS_TEST_HEADER_TOKEN',
+          },
+        ],
+        cookies: [],
+      },
+    });
+
+    expect(applyScopedAuthHeaders(
+      'https://docs.example.com/private',
+      { accept: 'text/html' },
+      [{ name: 'x-aiocs-token', value: 'header-secret', hosts: ['docs.example.com'] }],
+    )).toMatchObject({
+      accept: 'text/html',
+      'x-aiocs-token': 'header-secret',
+    });
+
+    expect(applyScopedAuthHeaders(
+      'https://cdn.example.com/asset.js',
+      { accept: '*/*' },
+      [{ name: 'x-aiocs-token', value: 'header-secret', hosts: ['docs.example.com'] }],
+    )).toEqual({
+      accept: '*/*',
+    });
+  });
+
+  it('supports per-header host and path scoping for authenticated headers', () => {
+    expect(applyScopedAuthHeaders(
+      'https://docs.example.com/private/start',
+      { accept: 'text/html' },
+      [{
+        name: 'x-aiocs-token',
+        value: 'header-secret',
+        hosts: ['docs.example.com'],
+        include: ['https://docs.example.com/private/**'],
+      }],
+    )).toMatchObject({
+      accept: 'text/html',
+      'x-aiocs-token': 'header-secret',
+    });
+
+    expect(applyScopedAuthHeaders(
+      'https://docs.example.com/public/start',
+      { accept: 'text/html' },
+      [{
+        name: 'x-aiocs-token',
+        value: 'header-secret',
+        hosts: ['docs.example.com'],
+        include: ['https://docs.example.com/private/**'],
+      }],
+    )).toEqual({
+      accept: 'text/html',
+    });
+  });
+
+  it('runs lightweight canary checks without creating a snapshot', async () => {
+    const server = await startDocsServer();
+    const catalog = openCatalog({ dataDir: root });
+
+    const spec = parseSourceSpecObject({
+      id: 'canary-source',
+      label: 'Canary Source',
+      startUrls: [`${server.baseUrl}/clipboard/start`],
+      allowedHosts: ['127.0.0.1'],
+      discovery: {
+        include: [`${server.baseUrl}/clipboard/**`],
+        exclude: [],
+        maxPages: 10,
+      },
+      extract: {
+        strategy: 'clipboardButton',
+        interactions: [
+          {
+            action: 'click',
+            selector: '#copy-page',
+          },
+        ],
+        clipboardTimeoutMs: 1_500,
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+      canary: {
+        everyHours: 6,
+        checks: [
+          {
+            url: `${server.baseUrl}/clipboard/start`,
+            expectedTitle: 'Clipboard Start',
+            expectedText: 'Clipboard-driven maker flow docs.',
+            minMarkdownLength: 20,
+          },
+        ],
+      },
+    });
+
+    try {
+      catalog.upsertSource(spec);
+
+      const result = await runSourceCanary({
+        catalog,
+        sourceId: spec.id,
+        env: process.env,
+      });
+
+      expect(result).toMatchObject({
+        sourceId: spec.id,
+        status: 'pass',
+        summary: {
+          passCount: 1,
+          failCount: 0,
+        },
+        checks: [
+          expect.objectContaining({
+            url: `${server.baseUrl}/clipboard/start`,
+            status: 'pass',
+          }),
+        ],
+      });
+      expect(catalog.listSnapshots(spec.id)).toHaveLength(0);
     } finally {
       await server.close();
       catalog.close();

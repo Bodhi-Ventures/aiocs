@@ -549,4 +549,124 @@ Second page content for market making docs.
     },
     30_000,
   );
+
+  it.each(['tsx', 'dist'] as const)(
+    'supports canary, diff, and backup commands with %s runtime',
+    async (runtime) => {
+      const server = await startDocsServer();
+      const specPath = join(root, 'diff-source.yaml');
+      const backupDir = join(root, 'backup-output');
+
+      writeFileSync(specPath, `
+id: diff-cli
+label: Diff CLI
+startUrls:
+  - ${server.baseUrl}/selector/start
+allowedHosts:
+  - 127.0.0.1
+discovery:
+  include:
+    - ${server.baseUrl}/selector/**
+  exclude: []
+  maxPages: 10
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+canary:
+  everyHours: 6
+  checks:
+    - url: ${server.baseUrl}/selector/start
+      expectedTitle: Selector Start
+      expectedText: Maker flow documentation starts here.
+      minMarkdownLength: 20
+`);
+
+      const env = {
+        ...process.env,
+        AIOCS_DATA_DIR: join(root, 'data'),
+        AIOCS_CONFIG_DIR: join(root, 'config'),
+      };
+
+      try {
+        await runCli(runtime, ['source', 'upsert', specPath], { cwd: root, env });
+        await runCli(runtime, ['fetch', 'diff-cli'], { cwd: root, env });
+
+        writeFileSync(specPath, `
+id: diff-cli
+label: Diff CLI
+startUrls:
+  - ${server.baseUrl}/selector-v2/start
+allowedHosts:
+  - 127.0.0.1
+discovery:
+  include:
+    - ${server.baseUrl}/selector-v2/**
+  exclude: []
+  maxPages: 10
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+canary:
+  everyHours: 6
+  checks:
+    - url: ${server.baseUrl}/selector-v2/start
+      expectedTitle: Selector Start
+      expectedText: Maker flow documentation starts here
+      minMarkdownLength: 20
+`);
+        await runCli(runtime, ['source', 'upsert', specPath], { cwd: root, env });
+        await runCli(runtime, ['fetch', 'diff-cli'], { cwd: root, env });
+
+        const canary = await runCli(runtime, ['--json', 'canary', 'diff-cli'], { cwd: root, env });
+        expect(canary.exitCode).toBe(0);
+        expect(parseJsonEnvelope(canary.stdout)).toMatchObject({
+          ok: true,
+          command: 'canary',
+          data: {
+            results: [
+              expect.objectContaining({
+                sourceId: 'diff-cli',
+                status: 'pass',
+              }),
+            ],
+          },
+        });
+
+        const diff = await runCli(runtime, ['--json', 'diff', 'diff-cli'], { cwd: root, env });
+        expect(diff.exitCode).toBe(0);
+        expect(parseJsonEnvelope(diff.stdout)).toMatchObject({
+          ok: true,
+          command: 'diff',
+          data: {
+            sourceId: 'diff-cli',
+            summary: expect.objectContaining({
+              changedPageCount: expect.any(Number),
+            }),
+          },
+        });
+
+        const backup = await runCli(runtime, ['--json', 'backup', 'export', backupDir], { cwd: root, env });
+        expect(backup.exitCode).toBe(0);
+        expect(parseJsonEnvelope(backup.stdout)).toMatchObject({
+          ok: true,
+          command: 'backup.export',
+          data: {
+            outputDir: backupDir,
+            manifestPath: `${backupDir}/manifest.json`,
+          },
+        });
+      } finally {
+        await server.close();
+      }
+    },
+    45_000,
+  );
 });

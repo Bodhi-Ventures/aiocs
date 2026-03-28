@@ -101,12 +101,16 @@ schedule:
         'source_upsert',
         'source_list',
         'fetch',
+        'canary',
         'refresh_due',
         'snapshot_list',
+        'diff_snapshots',
         'project_link',
         'project_unlink',
         'search',
         'show',
+        'backup_export',
+        'backup_import',
         'verify_coverage',
         'batch',
       ]));
@@ -214,6 +218,41 @@ schedule:
         },
       });
       expect(toolData<{ chunk: { markdown: string } }>(show).chunk.markdown).toContain('Maker flow documentation starts here.');
+
+      const canary = await client.callTool({
+        name: 'canary',
+        arguments: {
+          sourceIdOrAll: 'mcp-selector',
+        },
+      });
+      expect(toolData<{ results: Array<{ sourceId: string; status: string }> }>(canary)).toMatchObject({
+        results: [
+          expect.objectContaining({
+            sourceId: 'mcp-selector',
+            status: 'pass',
+          }),
+        ],
+      });
+
+      const diff = await client.callTool({
+        name: 'diff_snapshots',
+        arguments: {
+          sourceId: 'mcp-selector',
+        },
+      });
+      expect((diff.structuredContent as { ok: false; error: { code: string } }).error.code).toBe('SNAPSHOT_DIFF_BASE_NOT_FOUND');
+
+      const backupDir = join(root, 'backup-output');
+      const backupExport = await client.callTool({
+        name: 'backup_export',
+        arguments: {
+          outputDir: backupDir,
+        },
+      });
+      expect(toolData<{ outputDir: string; manifestPath: string }>(backupExport)).toMatchObject({
+        outputDir: backupDir,
+        manifestPath: `${backupDir}/manifest.json`,
+      });
 
       const referencePath = join(root, 'mcp-reference.md');
       writeFileSync(referencePath, `

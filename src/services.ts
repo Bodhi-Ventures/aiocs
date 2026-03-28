@@ -1,12 +1,13 @@
 import { resolve } from 'node:path';
 
+import { exportBackup, importBackup } from './backup.js';
 import { openCatalog } from './catalog/catalog.js';
 import { verifyCoverageAgainstReferences, type CoverageVerificationResult } from './coverage.js';
 import { AiocsError, AIOCS_ERROR_CODES } from './errors.js';
 import { resolveProjectScope } from './catalog/project-scope.js';
 import { bootstrapSourceSpecs } from './daemon.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
-import { fetchSource } from './fetch/fetch-source.js';
+import { fetchSource, runSourceCanary } from './fetch/fetch-source.js';
 import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { loadSourceSpec } from './spec/source-spec.js';
@@ -60,8 +61,13 @@ export async function listSources(): Promise<{
     id: string;
     label: string;
     nextDueAt: string;
+    nextCanaryDueAt: string | null;
     lastCheckedAt: string | null;
+    lastSuccessfulSnapshotAt: string | null;
     lastSuccessfulSnapshotId: string | null;
+    lastCanaryCheckedAt: string | null;
+    lastSuccessfulCanaryAt: string | null;
+    lastCanaryStatus: 'pass' | 'fail' | null;
   }>;
 }> {
   const sources = await withCatalog(({ catalog }) => catalog.listSources());
@@ -129,6 +135,49 @@ export async function refreshDueSources(): Promise<{
   return { results };
 }
 
+export async function runSourceCanaries(sourceIdOrAll: string): Promise<{
+  results: Array<{
+    sourceId: string;
+    status: 'pass' | 'fail';
+    checkedAt: string;
+    summary: {
+      checkCount: number;
+      passCount: number;
+      failCount: number;
+    };
+    checks: Array<{
+      url: string;
+      status: 'pass' | 'fail';
+      title?: string;
+      markdownLength?: number;
+      errorMessage?: string;
+    }>;
+  }>;
+}> {
+  const results = await withCatalog(async ({ catalog }) => {
+    const sourceIds = sourceIdOrAll === 'all'
+      ? catalog.listSources().map((item) => item.id)
+      : [sourceIdOrAll];
+
+    if (sourceIds.length === 0) {
+      return [];
+    }
+
+    const canaried = [];
+    for (const sourceId of sourceIds) {
+      canaried.push(await runSourceCanary({
+        catalog,
+        sourceId,
+        env: process.env,
+      }));
+    }
+
+    return canaried;
+  });
+
+  return { results };
+}
+
 export async function listSnapshotsForSource(sourceId: string): Promise<{
   sourceId: string;
   snapshots: Array<{
@@ -144,6 +193,35 @@ export async function listSnapshotsForSource(sourceId: string): Promise<{
     sourceId,
     snapshots,
   };
+}
+
+export async function diffSnapshotsForSource(input: {
+  sourceId: string;
+  fromSnapshotId?: string;
+  toSnapshotId?: string;
+}): Promise<{
+  sourceId: string;
+  fromSnapshotId: string;
+  toSnapshotId: string;
+  summary: {
+    addedPageCount: number;
+    removedPageCount: number;
+    changedPageCount: number;
+    unchangedPageCount: number;
+  };
+  addedPages: Array<{ url: string; title: string }>;
+  removedPages: Array<{ url: string; title: string }>;
+  changedPages: Array<{
+    url: string;
+    beforeTitle: string;
+    afterTitle: string;
+    lineSummary: {
+      addedLineCount: number;
+      removedLineCount: number;
+    };
+  }>;
+}> {
+  return withCatalog(({ catalog }) => catalog.diffSnapshots(input));
 }
 
 export async function linkProjectSources(projectPath: string, sourceIds: string[]): Promise<{
@@ -319,4 +397,55 @@ export async function initBuiltInSources(options?: {
 
 export function getDoctorReport(env: NodeJS.ProcessEnv = process.env): Promise<DoctorReport> {
   return runDoctor(env);
+}
+
+export async function exportCatalogBackup(input: {
+  outputDir: string;
+  replaceExisting?: boolean;
+}): Promise<{
+  outputDir: string;
+  manifestPath: string;
+  manifest: {
+    formatVersion: 1;
+    createdAt: string;
+    packageVersion: string;
+    entries: Array<{
+      relativePath: string;
+      type: 'file' | 'directory';
+      size: number;
+    }>;
+  };
+}> {
+  return exportBackup({
+    dataDir: getAiocsDataDir(),
+    configDir: getAiocsConfigDir(),
+    outputDir: input.outputDir,
+    ...(typeof input.replaceExisting === 'boolean' ? { replaceExisting: input.replaceExisting } : {}),
+  });
+}
+
+export async function importCatalogBackup(input: {
+  inputDir: string;
+  replaceExisting?: boolean;
+}): Promise<{
+  inputDir: string;
+  dataDir: string;
+  configDir?: string;
+  manifest: {
+    formatVersion: 1;
+    createdAt: string;
+    packageVersion: string;
+    entries: Array<{
+      relativePath: string;
+      type: 'file' | 'directory';
+      size: number;
+    }>;
+  };
+}> {
+  return importBackup({
+    inputDir: input.inputDir,
+    dataDir: getAiocsDataDir(),
+    configDir: getAiocsConfigDir(),
+    ...(typeof input.replaceExisting === 'boolean' ? { replaceExisting: input.replaceExisting } : {}),
+  });
 }

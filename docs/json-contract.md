@@ -48,10 +48,14 @@ All of these support the root-level `--json` flag:
 - `source upsert`
 - `source list`
 - `fetch`
+- `canary`
 - `refresh due`
 - `snapshot list`
+- `diff`
 - `project link`
 - `project unlink`
+- `backup export`
+- `backup import`
 - `search`
 - `verify coverage`
 - `show`
@@ -94,8 +98,8 @@ This section documents the stable top-level `data` payload per command.
 {
   "summary": {
     "status": "healthy",
-    "checkCount": 5,
-    "passCount": 5,
+    "checkCount": 7,
+    "passCount": 7,
     "warnCount": 0,
     "failCount": 0
   },
@@ -116,6 +120,8 @@ Check ids are currently:
 - `playwright`
 - `daemon-config`
 - `source-spec-dirs`
+- `freshness`
+- `daemon-heartbeat`
 - `docker`
 
 Summary status values:
@@ -143,8 +149,13 @@ Summary status values:
       "id": "hyperliquid",
       "label": "Hyperliquid",
       "nextDueAt": "2026-03-26T12:00:00.000Z",
+      "nextCanaryDueAt": "2026-03-26T06:00:00.000Z",
       "lastCheckedAt": "2026-03-26T10:00:00.000Z",
-      "lastSuccessfulSnapshotId": "snp_..."
+      "lastSuccessfulSnapshotAt": "2026-03-26T10:00:00.000Z",
+      "lastSuccessfulSnapshotId": "snp_...",
+      "lastCanaryCheckedAt": "2026-03-26T08:00:00.000Z",
+      "lastSuccessfulCanaryAt": "2026-03-26T08:00:00.000Z",
+      "lastCanaryStatus": "pass"
     }
   ]
 }
@@ -160,6 +171,33 @@ Summary status values:
       "snapshotId": "snp_...",
       "pageCount": 139,
       "reused": false
+    }
+  ]
+}
+```
+
+### `canary`
+
+```json
+{
+  "results": [
+    {
+      "sourceId": "hyperliquid",
+      "status": "pass",
+      "checkedAt": "2026-03-26T10:00:00.000Z",
+      "summary": {
+        "checkCount": 1,
+        "passCount": 1,
+        "failCount": 0
+      },
+      "checks": [
+        {
+          "url": "https://example.dev/docs/start",
+          "status": "pass",
+          "title": "Docs Start",
+          "markdownLength": 120
+        }
+      ]
     }
   ]
 }
@@ -188,6 +226,40 @@ Summary status values:
 {
   "projectPath": "/absolute/path/to/project",
   "sourceIds": ["hyperliquid", "lighter"]
+}
+```
+
+### `diff`
+
+```json
+{
+  "sourceId": "hyperliquid",
+  "fromSnapshotId": "snp_old",
+  "toSnapshotId": "snp_new",
+  "summary": {
+    "addedPageCount": 1,
+    "removedPageCount": 1,
+    "changedPageCount": 2,
+    "unchangedPageCount": 98
+  },
+  "addedPages": [
+    {
+      "url": "https://example.dev/docs/new-page",
+      "title": "New page"
+    }
+  ],
+  "removedPages": [],
+  "changedPages": [
+    {
+      "url": "https://example.dev/docs/start",
+      "beforeTitle": "Start",
+      "afterTitle": "Start",
+      "lineSummary": {
+        "addedLineCount": 3,
+        "removedLineCount": 2
+      }
+    }
+  ]
 }
 ```
 
@@ -248,6 +320,43 @@ Summary status values:
       }
     }
   ]
+}
+```
+
+### `backup.export`
+
+```json
+{
+  "outputDir": "/absolute/path/to/backup",
+  "manifestPath": "/absolute/path/to/backup/manifest.json",
+  "manifest": {
+    "formatVersion": 1,
+    "createdAt": "2026-03-26T10:00:00.000Z",
+    "packageVersion": "0.1.0",
+    "entries": [
+      {
+        "relativePath": "data/catalog.sqlite",
+        "type": "file",
+        "size": 32768
+      }
+    ]
+  }
+}
+```
+
+### `backup.import`
+
+```json
+{
+  "inputDir": "/absolute/path/to/backup",
+  "dataDir": "/Users/example/.aiocs/data",
+  "configDir": "/Users/example/.aiocs/config",
+  "manifest": {
+    "formatVersion": 1,
+    "createdAt": "2026-03-26T10:00:00.000Z",
+    "packageVersion": "0.1.0",
+    "entries": []
+  }
 }
 ```
 

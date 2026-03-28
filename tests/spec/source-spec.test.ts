@@ -76,4 +76,126 @@ schedule:
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('loads authenticated fetch and canary configuration', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aiocs-source-spec-auth-'));
+    const specPath = join(root, 'private-docs.yaml');
+
+    writeFileSync(specPath, `
+id: private-docs
+label: Private Docs
+startUrls:
+  - https://docs.example.com/start
+allowedHosts:
+  - docs.example.com
+discovery:
+  include:
+    - https://docs.example.com/**
+  exclude: []
+  maxPages: 50
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+auth:
+  headers:
+    - name: authorization
+      valueFromEnv: AIOCS_DOCS_TOKEN
+      hosts:
+        - docs.example.com
+      include:
+        - https://docs.example.com/private/**
+  cookies:
+    - name: session
+      valueFromEnv: AIOCS_DOCS_SESSION
+      domain: docs.example.com
+      path: /
+      httpOnly: true
+canary:
+  everyHours: 6
+  checks:
+    - url: https://docs.example.com/start
+      expectedTitle: Private Docs Start
+      expectedText: Secret market structure docs
+      minMarkdownLength: 40
+`);
+
+    try {
+      const spec = await loadSourceSpec(specPath);
+
+      expect(spec.auth).toEqual({
+        headers: [
+          {
+            name: 'authorization',
+            valueFromEnv: 'AIOCS_DOCS_TOKEN',
+            hosts: ['docs.example.com'],
+            include: ['https://docs.example.com/private/**'],
+          },
+        ],
+        cookies: [
+          {
+            name: 'session',
+            valueFromEnv: 'AIOCS_DOCS_SESSION',
+            domain: 'docs.example.com',
+            path: '/',
+            httpOnly: true,
+          },
+        ],
+      });
+      expect(spec.canary).toEqual({
+        everyHours: 6,
+        checks: [
+          {
+            url: 'https://docs.example.com/start',
+            expectedTitle: 'Private Docs Start',
+            expectedText: 'Secret market structure docs',
+            minMarkdownLength: 40,
+          },
+        ],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects authenticated header hosts that are outside the source allowlist', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aiocs-source-spec-auth-invalid-'));
+    const specPath = join(root, 'private-docs.yaml');
+
+    writeFileSync(specPath, `
+id: private-docs
+label: Private Docs
+startUrls:
+  - https://docs.example.com/start
+allowedHosts:
+  - docs.example.com
+discovery:
+  include:
+    - https://docs.example.com/**
+  exclude: []
+  maxPages: 50
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+auth:
+  headers:
+    - name: authorization
+      valueFromEnv: AIOCS_DOCS_TOKEN
+      hosts:
+        - cdn.example.com
+`);
+
+    try {
+      await expect(loadSourceSpec(specPath)).rejects.toThrow(/must be included in allowedHosts/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

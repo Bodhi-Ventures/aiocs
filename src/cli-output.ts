@@ -111,7 +111,7 @@ export function inferRequestedCommand(argv: string[]): string {
     return 'cli';
   }
 
-  if (['source', 'snapshot', 'project', 'refresh', 'verify'].includes(first) && second && !second.startsWith('-')) {
+  if (['source', 'snapshot', 'project', 'refresh', 'verify', 'backup'].includes(first) && second && !second.startsWith('-')) {
     return `${first}.${second}`;
   }
 

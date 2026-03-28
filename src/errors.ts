@@ -2,11 +2,17 @@ export const AIOCS_ERROR_CODES = {
   invalidArgument: 'INVALID_ARGUMENT',
   sourceNotFound: 'SOURCE_NOT_FOUND',
   snapshotNotFound: 'SNAPSHOT_NOT_FOUND',
+  snapshotDiffBaseNotFound: 'SNAPSHOT_DIFF_BASE_NOT_FOUND',
   noPagesFetched: 'NO_PAGES_FETCHED',
   noProjectScope: 'NO_PROJECT_SCOPE',
   chunkNotFound: 'CHUNK_NOT_FOUND',
   referenceFileNotFound: 'REFERENCE_FILE_NOT_FOUND',
   invalidReferenceFile: 'INVALID_REFERENCE_FILE',
+  authEnvMissing: 'AUTH_ENV_MISSING',
+  canaryFailed: 'CANARY_FAILED',
+  backupConflict: 'BACKUP_CONFLICT',
+  backupInvalid: 'BACKUP_INVALID',
+  backupSourceMissing: 'BACKUP_SOURCE_MISSING',
   internalError: 'INTERNAL_ERROR',
 } as const;
 

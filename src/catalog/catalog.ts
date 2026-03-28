@@ -8,7 +8,7 @@ import { chunkMarkdown } from './chunking.js';
 import { buildSnapshotFingerprint, sha256 } from './fingerprint.js';
 import { canonicalizeProjectPath, resolveProjectScope } from './project-scope.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
-import type { SourceSpec } from '../spec/source-spec.js';
+import { resolveSourceCanary, type SourceSpec } from '../spec/source-spec.js';
 
 type OpenCatalogOptions = {
   dataDir: string;
@@ -53,6 +53,22 @@ type ProjectLinkRow = {
   source_id: string;
 };
 
+type SnapshotPageRow = {
+  url: string;
+  title: string;
+  markdown: string;
+  content_hash: string;
+};
+
+type DaemonStateRow = {
+  last_started_at: string | null;
+  last_cycle_started_at: string | null;
+  last_cycle_completed_at: string | null;
+  last_cycle_status: string | null;
+  interval_minutes: number | null;
+  fetch_on_start: number | null;
+};
+
 function initSchema(db: Database.Database): void {
   db.exec(`
     PRAGMA foreign_keys = ON;
@@ -66,7 +82,12 @@ function initSchema(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_checked_at TEXT,
+      last_successful_snapshot_at TEXT,
       last_successful_snapshot_id TEXT,
+      last_canary_checked_at TEXT,
+      last_successful_canary_at TEXT,
+      last_canary_status TEXT,
+      next_canary_due_at TEXT,
       next_due_at TEXT NOT NULL
     );
 
@@ -139,17 +160,50 @@ function initSchema(db: Database.Database): void {
       finished_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS canary_runs (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('pass', 'fail')),
+      checked_at TEXT NOT NULL,
+      details_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS project_links (
       project_path TEXT NOT NULL,
       source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
       created_at TEXT NOT NULL,
       PRIMARY KEY(project_path, source_id)
     );
+
+    CREATE TABLE IF NOT EXISTS daemon_state (
+      singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+      last_started_at TEXT,
+      last_cycle_started_at TEXT,
+      last_cycle_completed_at TEXT,
+      last_cycle_status TEXT,
+      interval_minutes INTEGER,
+      fetch_on_start INTEGER
+    );
   `);
 
   const sourceColumns = db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>;
   if (!sourceColumns.some((column) => column.name === 'spec_path')) {
     db.exec('ALTER TABLE sources ADD COLUMN spec_path TEXT');
+  }
+  if (!sourceColumns.some((column) => column.name === 'last_successful_snapshot_at')) {
+    db.exec('ALTER TABLE sources ADD COLUMN last_successful_snapshot_at TEXT');
+  }
+  if (!sourceColumns.some((column) => column.name === 'last_canary_checked_at')) {
+    db.exec('ALTER TABLE sources ADD COLUMN last_canary_checked_at TEXT');
+  }
+  if (!sourceColumns.some((column) => column.name === 'last_successful_canary_at')) {
+    db.exec('ALTER TABLE sources ADD COLUMN last_successful_canary_at TEXT');
+  }
+  if (!sourceColumns.some((column) => column.name === 'last_canary_status')) {
+    db.exec('ALTER TABLE sources ADD COLUMN last_canary_status TEXT');
+  }
+  if (!sourceColumns.some((column) => column.name === 'next_canary_due_at')) {
+    db.exec('ALTER TABLE sources ADD COLUMN next_canary_due_at TEXT');
   }
 }
 
@@ -243,21 +297,33 @@ export function openCatalog(options: OpenCatalogOptions) {
       const timestamp = nowIso();
       const configHash = sha256(stableStringify(spec));
       const existing = db
-        .prepare('SELECT id, created_at, next_due_at, config_hash FROM sources WHERE id = ?')
-        .get(spec.id) as { id: string; created_at: string; next_due_at: string; config_hash: string } | undefined;
+        .prepare('SELECT id, created_at, next_due_at, next_canary_due_at, config_hash FROM sources WHERE id = ?')
+        .get(spec.id) as {
+          id: string;
+          created_at: string;
+          next_due_at: string;
+          next_canary_due_at: string | null;
+          config_hash: string;
+        } | undefined;
       const resolvedSpecPath = options?.specPath ? resolve(options.specPath) : null;
       const nextDueAt = !existing
         ? addHoursIso(spec.schedule.everyHours)
         : existing.config_hash === configHash
           ? existing.next_due_at
           : timestamp;
+      const canaryConfig = resolveSourceCanary(spec);
+      const nextCanaryDueAt = !existing
+        ? timestamp
+        : existing.config_hash === configHash
+          ? (existing.next_canary_due_at ?? addHoursIso(canaryConfig.everyHours))
+          : timestamp;
       const configChanged = Boolean(existing && existing.config_hash !== configHash);
 
       db.prepare(`
         INSERT INTO sources (
-          id, label, spec_json, spec_path, config_hash, created_at, updated_at, next_due_at
+          id, label, spec_json, spec_path, config_hash, created_at, updated_at, next_due_at, next_canary_due_at
         ) VALUES (
-          @id, @label, @specJson, @specPath, @configHash, @createdAt, @updatedAt, @nextDueAt
+          @id, @label, @specJson, @specPath, @configHash, @createdAt, @updatedAt, @nextDueAt, @nextCanaryDueAt
         )
         ON CONFLICT(id) DO UPDATE SET
           label = excluded.label,
@@ -265,7 +331,8 @@ export function openCatalog(options: OpenCatalogOptions) {
           spec_path = excluded.spec_path,
           config_hash = excluded.config_hash,
           updated_at = excluded.updated_at,
-          next_due_at = excluded.next_due_at
+          next_due_at = excluded.next_due_at,
+          next_canary_due_at = excluded.next_canary_due_at
       `).run({
         id: spec.id,
         label: spec.label,
@@ -275,6 +342,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         createdAt: existing?.created_at ?? timestamp,
         updatedAt: timestamp,
         nextDueAt,
+        nextCanaryDueAt,
       });
 
       return {
@@ -300,27 +368,52 @@ export function openCatalog(options: OpenCatalogOptions) {
       id: string;
       label: string;
       nextDueAt: string;
+      nextCanaryDueAt: string | null;
       lastCheckedAt: string | null;
+      lastSuccessfulSnapshotAt: string | null;
       lastSuccessfulSnapshotId: string | null;
+      lastCanaryCheckedAt: string | null;
+      lastSuccessfulCanaryAt: string | null;
+      lastCanaryStatus: 'pass' | 'fail' | null;
     }> {
       const rows = db.prepare(`
-        SELECT id, label, next_due_at, last_checked_at, last_successful_snapshot_id
+        SELECT
+          id,
+          label,
+          next_due_at,
+          next_canary_due_at,
+          last_checked_at,
+          last_successful_snapshot_at,
+          last_successful_snapshot_id,
+          last_canary_checked_at,
+          last_successful_canary_at,
+          last_canary_status
         FROM sources
         ORDER BY id
       `).all() as Array<{
         id: string;
         label: string;
         next_due_at: string;
+        next_canary_due_at: string | null;
         last_checked_at: string | null;
+        last_successful_snapshot_at: string | null;
         last_successful_snapshot_id: string | null;
+        last_canary_checked_at: string | null;
+        last_successful_canary_at: string | null;
+        last_canary_status: 'pass' | 'fail' | null;
       }>;
 
       return rows.map((row) => ({
         id: row.id,
         label: row.label,
         nextDueAt: row.next_due_at,
+        nextCanaryDueAt: row.next_canary_due_at,
         lastCheckedAt: row.last_checked_at,
+        lastSuccessfulSnapshotAt: row.last_successful_snapshot_at,
         lastSuccessfulSnapshotId: row.last_successful_snapshot_id,
+        lastCanaryCheckedAt: row.last_canary_checked_at,
+        lastSuccessfulCanaryAt: row.last_successful_canary_at,
+        lastCanaryStatus: row.last_canary_status,
       }));
     },
 
@@ -330,6 +423,18 @@ export function openCatalog(options: OpenCatalogOptions) {
         FROM sources
         WHERE next_due_at <= ?
         ORDER BY next_due_at, id
+      `).all(referenceTime) as Array<{ id: string }>;
+
+      return rows.map((row) => row.id);
+    },
+
+    listCanaryDueSourceIds(referenceTime = nowIso()): string[] {
+      const rows = db.prepare(`
+        SELECT id
+        FROM sources
+        WHERE next_canary_due_at IS NOT NULL
+          AND next_canary_due_at <= ?
+        ORDER BY next_canary_due_at, id
       `).all(referenceTime) as Array<{ id: string }>;
 
       return rows.map((row) => row.id);
@@ -407,9 +512,9 @@ export function openCatalog(options: OpenCatalogOptions) {
       if (existing) {
         db.prepare(`
           UPDATE sources
-          SET last_checked_at = ?, last_successful_snapshot_id = ?, next_due_at = ?, updated_at = ?
+          SET last_checked_at = ?, last_successful_snapshot_at = ?, last_successful_snapshot_id = ?, next_due_at = ?, updated_at = ?
           WHERE id = ?
-        `).run(checkedAt, existing.id, nextDueAt, checkedAt, input.sourceId);
+        `).run(checkedAt, checkedAt, existing.id, nextDueAt, checkedAt, input.sourceId);
 
         db.prepare(`
           INSERT INTO fetch_runs (id, source_id, status, snapshot_id, started_at, finished_at)
@@ -473,9 +578,9 @@ export function openCatalog(options: OpenCatalogOptions) {
 
         db.prepare(`
           UPDATE sources
-          SET last_checked_at = ?, last_successful_snapshot_id = ?, next_due_at = ?, updated_at = ?
+          SET last_checked_at = ?, last_successful_snapshot_at = ?, last_successful_snapshot_id = ?, next_due_at = ?, updated_at = ?
           WHERE id = ?
-        `).run(checkedAt, snapshotId, nextDueAt, checkedAt, input.sourceId);
+        `).run(checkedAt, checkedAt, snapshotId, nextDueAt, checkedAt, input.sourceId);
 
         insertRun.run(randomUUID(), input.sourceId, snapshotId, checkedAt, checkedAt);
       });
@@ -513,6 +618,57 @@ export function openCatalog(options: OpenCatalogOptions) {
         SET last_checked_at = ?, next_due_at = ?, updated_at = ?
         WHERE id = ?
       `).run(timestamp, addHoursIso(spec.schedule.everyHours), timestamp, input.sourceId);
+    },
+
+    recordCanaryRun(input: {
+      sourceId: string;
+      status: 'pass' | 'fail';
+      checkedAt: string;
+      details: unknown;
+    }): void {
+      const sourceRow = db
+        .prepare('SELECT spec_json FROM sources WHERE id = ?')
+        .get(input.sourceId) as { spec_json: string } | undefined;
+
+      if (!sourceRow) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
+      }
+
+      const spec = JSON.parse(sourceRow.spec_json) as SourceSpec;
+      const canary = resolveSourceCanary(spec);
+
+      db.prepare(`
+        INSERT INTO canary_runs (id, source_id, status, checked_at, details_json)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        randomUUID(),
+        input.sourceId,
+        input.status,
+        input.checkedAt,
+        JSON.stringify(input.details),
+      );
+
+      db.prepare(`
+        UPDATE sources
+        SET
+          last_canary_checked_at = ?,
+          last_successful_canary_at = CASE WHEN ? = 'pass' THEN ? ELSE last_successful_canary_at END,
+          last_canary_status = ?,
+          next_canary_due_at = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        input.checkedAt,
+        input.status,
+        input.checkedAt,
+        input.status,
+        addHoursIso(canary.everyHours),
+        input.checkedAt,
+        input.sourceId,
+      );
     },
 
     listProjectLinks,
@@ -571,7 +727,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         SELECT id, source_id, detected_version, created_at, page_count
         FROM snapshots
         WHERE source_id = ?
-        ORDER BY created_at DESC, id DESC
+        ORDER BY rowid DESC
       `).all(sourceId) as Array<{
         id: string;
         source_id: string;
@@ -587,6 +743,152 @@ export function openCatalog(options: OpenCatalogOptions) {
         createdAt: row.created_at,
         pageCount: row.page_count,
       }));
+    },
+
+    diffSnapshots(input: {
+      sourceId: string;
+      fromSnapshotId?: string;
+      toSnapshotId?: string;
+    }): {
+      sourceId: string;
+      fromSnapshotId: string;
+      toSnapshotId: string;
+      summary: {
+        addedPageCount: number;
+        removedPageCount: number;
+        changedPageCount: number;
+        unchangedPageCount: number;
+      };
+      addedPages: Array<{ url: string; title: string }>;
+      removedPages: Array<{ url: string; title: string }>;
+      changedPages: Array<{
+        url: string;
+        beforeTitle: string;
+        afterTitle: string;
+        lineSummary: {
+          addedLineCount: number;
+          removedLineCount: number;
+        };
+      }>;
+    } {
+      const snapshots = this.listSnapshots(input.sourceId);
+      if (snapshots.length === 0) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `No successful snapshot found for source '${input.sourceId}'`,
+        );
+      }
+
+      const toSnapshot = input.toSnapshotId
+        ? snapshots.find((snapshot) => snapshot.snapshotId === input.toSnapshotId)
+        : snapshots[0];
+
+      if (!toSnapshot) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `Snapshot '${input.toSnapshotId}' not found for source '${input.sourceId}'`,
+        );
+      }
+
+      const toSnapshotIndex = snapshots.findIndex((snapshot) => snapshot.snapshotId === toSnapshot.snapshotId);
+      const fromSnapshot = input.fromSnapshotId
+        ? snapshots.find((snapshot) => snapshot.snapshotId === input.fromSnapshotId)
+        : snapshots[toSnapshotIndex + 1];
+
+      if (!fromSnapshot) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotDiffBaseNotFound,
+          `No base snapshot available to diff source '${input.sourceId}'`,
+        );
+      }
+
+      const loadSnapshotPages = (snapshotId: string): SnapshotPageRow[] =>
+        db.prepare(`
+          SELECT url, title, markdown, content_hash
+          FROM pages
+          WHERE snapshot_id = ?
+          ORDER BY url
+        `).all(snapshotId) as SnapshotPageRow[];
+
+      const beforePages = loadSnapshotPages(fromSnapshot.snapshotId);
+      const afterPages = loadSnapshotPages(toSnapshot.snapshotId);
+      const beforeMap = new Map(beforePages.map((page) => [page.url, page]));
+      const afterMap = new Map(afterPages.map((page) => [page.url, page]));
+
+      const addedPages = afterPages
+        .filter((page) => !beforeMap.has(page.url))
+        .map((page) => ({
+          url: page.url,
+          title: page.title,
+        }));
+
+      const removedPages = beforePages
+        .filter((page) => !afterMap.has(page.url))
+        .map((page) => ({
+          url: page.url,
+          title: page.title,
+        }));
+
+      const summarizeLineDiff = (beforeMarkdown: string, afterMarkdown: string) => {
+        const beforeLines = beforeMarkdown.split('\n');
+        const afterLines = afterMarkdown.split('\n');
+        let prefix = 0;
+        while (
+          prefix < beforeLines.length &&
+          prefix < afterLines.length &&
+          beforeLines[prefix] === afterLines[prefix]
+        ) {
+          prefix += 1;
+        }
+
+        let suffix = 0;
+        while (
+          suffix < beforeLines.length - prefix &&
+          suffix < afterLines.length - prefix &&
+          beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+        ) {
+          suffix += 1;
+        }
+
+        return {
+          addedLineCount: Math.max(0, afterLines.length - prefix - suffix),
+          removedLineCount: Math.max(0, beforeLines.length - prefix - suffix),
+        };
+      };
+
+      const changedPages = beforePages
+        .filter((page) => afterMap.has(page.url))
+        .map((page) => ({
+          before: page,
+          after: afterMap.get(page.url)!,
+        }))
+        .filter(({ before, after }) => before.content_hash !== after.content_hash || before.title !== after.title)
+        .map(({ before, after }) => ({
+          url: before.url,
+          beforeTitle: before.title,
+          afterTitle: after.title,
+          lineSummary: summarizeLineDiff(before.markdown, after.markdown),
+        }));
+
+      const unchangedPageCount = beforePages.filter((page) => {
+        const next = afterMap.get(page.url);
+        return next && next.content_hash === page.content_hash && next.title === page.title;
+      }).length;
+
+      return {
+        sourceId: input.sourceId,
+        fromSnapshotId: fromSnapshot.snapshotId,
+        toSnapshotId: toSnapshot.snapshotId,
+        summary: {
+          addedPageCount: addedPages.length,
+          removedPageCount: removedPages.length,
+          changedPageCount: changedPages.length,
+          unchangedPageCount,
+        },
+        addedPages,
+        removedPages,
+        changedPages,
+      };
     },
 
     search(input: SearchInput): {
@@ -719,6 +1021,91 @@ export function openCatalog(options: OpenCatalogOptions) {
         offset,
         hasMore: offset + results.length < totalRow.total,
         results,
+      };
+    },
+
+    markDaemonStarted(input: {
+      startedAt: string;
+      intervalMinutes: number;
+      fetchOnStart: boolean;
+    }): void {
+      db.prepare(`
+        INSERT INTO daemon_state (
+          singleton_id,
+          last_started_at,
+          interval_minutes,
+          fetch_on_start
+        ) VALUES (1, ?, ?, ?)
+        ON CONFLICT(singleton_id) DO UPDATE SET
+          last_started_at = excluded.last_started_at,
+          interval_minutes = excluded.interval_minutes,
+          fetch_on_start = excluded.fetch_on_start
+      `).run(
+        input.startedAt,
+        input.intervalMinutes,
+        input.fetchOnStart ? 1 : 0,
+      );
+    },
+
+    markDaemonCycleStarted(startedAt: string): void {
+      db.prepare(`
+        INSERT INTO daemon_state (singleton_id, last_cycle_started_at)
+        VALUES (1, ?)
+        ON CONFLICT(singleton_id) DO UPDATE SET
+          last_cycle_started_at = excluded.last_cycle_started_at
+      `).run(startedAt);
+    },
+
+    markDaemonCycleCompleted(input: {
+      completedAt: string;
+      status: 'success' | 'degraded' | 'failed';
+    }): void {
+      db.prepare(`
+        INSERT INTO daemon_state (
+          singleton_id,
+          last_cycle_completed_at,
+          last_cycle_status
+        ) VALUES (1, ?, ?)
+        ON CONFLICT(singleton_id) DO UPDATE SET
+          last_cycle_completed_at = excluded.last_cycle_completed_at,
+          last_cycle_status = excluded.last_cycle_status
+      `).run(
+        input.completedAt,
+        input.status,
+      );
+    },
+
+    getDaemonState(): {
+      lastStartedAt: string | null;
+      lastCycleStartedAt: string | null;
+      lastCycleCompletedAt: string | null;
+      lastCycleStatus: string | null;
+      intervalMinutes: number | null;
+      fetchOnStart: boolean | null;
+    } | null {
+      const row = db.prepare(`
+        SELECT
+          last_started_at,
+          last_cycle_started_at,
+          last_cycle_completed_at,
+          last_cycle_status,
+          interval_minutes,
+          fetch_on_start
+        FROM daemon_state
+        WHERE singleton_id = 1
+      `).get() as DaemonStateRow | undefined;
+
+      if (!row) {
+        return null;
+      }
+
+      return {
+        lastStartedAt: row.last_started_at,
+        lastCycleStartedAt: row.last_cycle_started_at,
+        lastCycleCompletedAt: row.last_cycle_completed_at,
+        lastCycleStatus: row.last_cycle_status,
+        intervalMinutes: row.interval_minutes,
+        fetchOnStart: row.fetch_on_start === null ? null : row.fetch_on_start === 1,
       };
     },
 

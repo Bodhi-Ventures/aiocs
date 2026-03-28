@@ -11,6 +11,7 @@ import {
   bootstrapSourceSpecs,
   parseDaemonConfig,
   runDaemonCycle,
+  startDaemon,
 } from '../../src/daemon.js';
 
 function writeSelectorSpec(
@@ -369,5 +370,104 @@ describe('daemon runtime', () => {
       catalog.close();
       await server.close();
     }
+  });
+
+  it('records a degraded daemon heartbeat when startup canaries fail', async () => {
+    const server = await startDocsServer();
+    const specDir = join(root, 'specs');
+    const dataDir = join(root, 'data');
+    mkdirSync(specDir, { recursive: true });
+    const specPath = join(specDir, 'daemon-canary-fail.yaml');
+
+    writeFileSync(specPath, `
+id: daemon-canary-fail
+label: daemon-canary-fail
+startUrls:
+  - ${server.baseUrl}/selector/start
+allowedHosts:
+  - 127.0.0.1
+discovery:
+  include:
+    - ${server.baseUrl}/selector/**
+  exclude: []
+  maxPages: 10
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+canary:
+  everyHours: 6
+  checks:
+    - url: ${server.baseUrl}/selector/start
+      expectedText: this text does not exist
+      minMarkdownLength: 20
+`);
+
+    const catalog = openCatalog({ dataDir });
+    const events: string[] = [];
+    const abortController = new AbortController();
+
+    try {
+      await startDaemon({
+        catalog,
+        dataDir,
+        config: {
+          intervalMinutes: 60,
+          fetchOnStart: true,
+          strictSourceSpecDirs: true,
+          sourceSpecDirs: [specDir],
+        },
+        logger: {
+          emit(event) {
+            events.push(event.type);
+            if (event.type === 'daemon.cycle.completed') {
+              abortController.abort();
+            }
+          },
+        },
+        signal: abortController.signal,
+      });
+
+      const daemonState = catalog.getDaemonState();
+      expect(events).toContain('daemon.cycle.completed');
+      expect(daemonState).toMatchObject({
+        lastCycleStatus: 'degraded',
+      });
+    } finally {
+      catalog.close();
+      await server.close();
+    }
+  });
+
+  it('records a failed daemon heartbeat when the cycle crashes before completion', async () => {
+    const dataDir = join(root, 'data');
+    const catalog = openCatalog({ dataDir });
+
+    await expect(startDaemon({
+      catalog,
+      dataDir,
+      config: {
+        intervalMinutes: 60,
+        fetchOnStart: true,
+        strictSourceSpecDirs: true,
+        sourceSpecDirs: [join(root, 'missing-specs')],
+      },
+      logger: {
+        emit() {
+          // no-op
+        },
+      },
+    })).rejects.toThrow('Missing source spec directories');
+
+    expect(catalog.getDaemonState()).toMatchObject({
+      lastCycleStatus: 'failed',
+      lastCycleStartedAt: expect.any(String),
+      lastCycleCompletedAt: expect.any(String),
+    });
+
+    catalog.close();
   });
 });

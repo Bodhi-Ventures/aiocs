@@ -19,12 +19,16 @@ import {
   AIOCS_ERROR_CODES,
 } from './errors.js';
 import {
+  diffSnapshotsForSource,
+  exportCatalogBackup,
+  importCatalogBackup,
   fetchSources,
   getDoctorReport,
   initBuiltInSources,
   linkProjectSources,
   listSnapshotsForSource,
   listSources,
+  runSourceCanaries,
   searchCatalog,
   showChunk,
   type SearchOptions,
@@ -141,10 +145,23 @@ function createDaemonLogger(json: boolean): { emit(event: DaemonEvent): void } {
             `Cycle completed (${event.reason})`,
             `bootstrapped=${event.result.bootstrapped.processedSpecCount}`,
             `removed=${event.result.bootstrapped.removedSourceIds.length}`,
+            `canaries=${event.result.canaried.length}`,
+            `canaryFailed=${event.result.canaryFailed.length}`,
             `due=${event.result.dueSourceIds.length}`,
             `refreshed=${event.result.refreshed.length}`,
             `failed=${event.result.failed.length}`,
           ].join(' | '));
+          for (const canaried of event.result.canaried) {
+            console.log([
+              'Canary',
+              canaried.sourceId,
+              `status=${canaried.status}`,
+              `checks=${canaried.summary.checkCount}`,
+            ].join(' | '));
+          }
+          for (const failedCanary of event.result.canaryFailed) {
+            console.log(`Canary failed | ${failedCanary.sourceId} | ${failedCanary.errorMessage}`);
+          }
           for (const refreshed of event.result.refreshed) {
             console.log([
               refreshed.reused ? 'Reused' : 'Fetched',
@@ -327,6 +344,24 @@ program
     });
   });
 
+program
+  .command('canary')
+  .argument('<source-id-or-all>')
+  .description('Run lightweight extraction canaries without creating snapshots.')
+  .action(async (sourceIdOrAll: string, _options: Record<string, never>, command: Command) => {
+    await executeCommand(command, 'canary', async () => {
+      const result = await runSourceCanaries(sourceIdOrAll);
+      return {
+        data: result,
+        human: result.results.length === 0
+          ? 'No sources registered.'
+          : result.results.map((entry) =>
+              `Canary ${entry.sourceId} | status=${entry.status} | checks=${entry.summary.checkCount} | pass=${entry.summary.passCount} | fail=${entry.summary.failCount}`,
+            ),
+      };
+    });
+  });
+
 const refresh = program.command('refresh');
 refresh
   .command('due')
@@ -367,6 +402,37 @@ snapshot
     });
   });
 
+program
+  .command('diff')
+  .alias('changes')
+  .argument('<source-id>')
+  .option('--from <snapshot-id>', 'base snapshot id')
+  .option('--to <snapshot-id>', 'target snapshot id')
+  .description('Compare two snapshots for a source.')
+  .action(
+    async (
+      sourceId: string,
+      options: { from?: string; to?: string },
+      command: Command,
+    ) => {
+      await executeCommand(command, 'diff', async () => {
+        const result = await diffSnapshotsForSource({
+          sourceId,
+          ...(options.from ? { fromSnapshotId: options.from } : {}),
+          ...(options.to ? { toSnapshotId: options.to } : {}),
+        });
+
+        return {
+          data: result,
+          human: [
+            `Diff ${result.sourceId} | from=${result.fromSnapshotId} | to=${result.toSnapshotId}`,
+            `Added=${result.summary.addedPageCount} | Removed=${result.summary.removedPageCount} | Changed=${result.summary.changedPageCount} | Unchanged=${result.summary.unchangedPageCount}`,
+          ],
+        };
+      });
+    },
+  );
+
 const project = program.command('project');
 project
   .command('link')
@@ -395,6 +461,53 @@ project
       };
     });
   });
+
+const backup = program.command('backup');
+backup
+  .command('export')
+  .argument('<output-dir>')
+  .option('--replace-existing', 'replace an existing non-empty export directory')
+  .action(
+    async (
+      outputDir: string,
+      options: { replaceExisting?: boolean },
+      command: Command,
+    ) => {
+      await executeCommand(command, 'backup.export', async () => {
+        const result = await exportCatalogBackup({
+          outputDir,
+          ...(typeof options.replaceExisting === 'boolean' ? { replaceExisting: options.replaceExisting } : {}),
+        });
+        return {
+          data: result,
+          human: `Exported backup to ${result.outputDir}`,
+        };
+      });
+    },
+  );
+
+backup
+  .command('import')
+  .argument('<input-dir>')
+  .option('--replace-existing', 'replace an existing local aiocs data/config directory')
+  .action(
+    async (
+      inputDir: string,
+      options: { replaceExisting?: boolean },
+      command: Command,
+    ) => {
+      await executeCommand(command, 'backup.import', async () => {
+        const result = await importCatalogBackup({
+          inputDir,
+          ...(typeof options.replaceExisting === 'boolean' ? { replaceExisting: options.replaceExisting } : {}),
+        });
+        return {
+          data: result,
+          human: `Imported backup from ${result.inputDir}`,
+        };
+      });
+    },
+  );
 
 program
   .command('search')

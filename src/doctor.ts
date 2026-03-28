@@ -14,7 +14,14 @@ export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorSummaryStatus = 'healthy' | 'degraded' | 'unhealthy';
 
 export type DoctorCheck = {
-  id: 'catalog' | 'playwright' | 'daemon-config' | 'source-spec-dirs' | 'docker';
+  id:
+    | 'catalog'
+    | 'playwright'
+    | 'daemon-config'
+    | 'source-spec-dirs'
+    | 'freshness'
+    | 'daemon-heartbeat'
+    | 'docker';
   status: DoctorCheckStatus;
   summary: string;
   details?: Record<string, unknown>;
@@ -53,9 +60,18 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
-async function checkCatalog(): Promise<DoctorCheck> {
-  const dataDir = getAiocsDataDir();
-  const configDir = getAiocsConfigDir();
+function parseTimestamp(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+async function checkCatalog(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+  const dataDir = getAiocsDataDir(env);
+  const configDir = getAiocsConfigDir(env);
   let catalog = null;
 
   try {
@@ -202,6 +218,124 @@ async function checkSourceSpecDirs(
   };
 }
 
+async function checkFreshness(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+  const dataDir = getAiocsDataDir(env);
+  let catalog = null;
+
+  try {
+    catalog = openCatalog({ dataDir });
+    const sources = catalog.listSources();
+    const referenceTime = Date.now();
+
+    if (sources.length === 0) {
+      return {
+        id: 'freshness',
+        status: 'pass',
+        summary: 'No sources are registered, so no source freshness checks are pending.',
+        details: {
+          sourceCount: 0,
+        },
+      };
+    }
+
+    const staleSources = sources
+      .filter((source) => !source.lastSuccessfulSnapshotId || Date.parse(source.nextDueAt) <= referenceTime)
+      .map((source) => ({
+        sourceId: source.id,
+        nextDueAt: source.nextDueAt,
+        lastSuccessfulSnapshotAt: source.lastSuccessfulSnapshotAt,
+      }));
+
+    const staleCanaries = sources
+      .filter((source) =>
+        (source.nextCanaryDueAt && Date.parse(source.nextCanaryDueAt) <= referenceTime)
+        || source.lastCanaryStatus === 'fail',
+      )
+      .map((source) => ({
+        sourceId: source.id,
+        nextCanaryDueAt: source.nextCanaryDueAt,
+        lastCanaryCheckedAt: source.lastCanaryCheckedAt,
+        lastCanaryStatus: source.lastCanaryStatus,
+      }));
+
+    const status: DoctorCheckStatus = staleSources.length > 0 || staleCanaries.length > 0 ? 'warn' : 'pass';
+    const summary = status === 'pass'
+      ? 'Source snapshots and canaries are fresh.'
+      : `Source freshness issues detected: ${staleSources.length} stale snapshot scope(s), ${staleCanaries.length} stale/failed canary scope(s).`;
+
+    return {
+      id: 'freshness',
+      status,
+      summary,
+      details: {
+        sourceCount: sources.length,
+        staleSources,
+        staleCanaries,
+      },
+    };
+  } catch (error) {
+    return {
+      id: 'freshness',
+      status: 'fail',
+      summary: `Freshness checks failed: ${toErrorMessage(error)}`,
+    };
+  } finally {
+    catalog?.close();
+  }
+}
+
+async function checkDaemonHeartbeat(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+  const dataDir = getAiocsDataDir(env);
+  let catalog = null;
+
+  try {
+    catalog = openCatalog({ dataDir });
+    const daemonState = catalog.getDaemonState();
+    if (!daemonState) {
+      return {
+        id: 'daemon-heartbeat',
+        status: 'warn',
+        summary: 'No daemon heartbeat has been recorded yet.',
+      };
+    }
+
+    const intervalMinutes = daemonState.intervalMinutes ?? 60;
+    const completedAt = parseTimestamp(daemonState.lastCycleCompletedAt);
+    if (!completedAt) {
+      return {
+        id: 'daemon-heartbeat',
+        status: 'warn',
+        summary: 'Daemon heartbeat exists but no completed cycle has been recorded yet.',
+        details: daemonState,
+      };
+    }
+
+    const ageMinutes = Math.floor((Date.now() - completedAt) / 60_000);
+    const stale = ageMinutes > intervalMinutes * 2;
+    const unhealthyStatus = daemonState.lastCycleStatus === 'failed' || daemonState.lastCycleStatus === 'degraded';
+
+    return {
+      id: 'daemon-heartbeat',
+      status: stale || unhealthyStatus ? 'warn' : 'pass',
+      summary: stale || unhealthyStatus
+        ? `Daemon heartbeat is stale or unhealthy (age=${ageMinutes}m, status=${daemonState.lastCycleStatus ?? 'unknown'}).`
+        : `Daemon heartbeat is recent (age=${ageMinutes}m).`,
+      details: {
+        ...daemonState,
+        ageMinutes,
+      },
+    };
+  } catch (error) {
+    return {
+      id: 'daemon-heartbeat',
+      status: 'fail',
+      summary: `Daemon heartbeat check failed: ${toErrorMessage(error)}`,
+    };
+  } finally {
+    catalog?.close();
+  }
+}
+
 async function checkDocker(): Promise<DoctorCheck> {
   try {
     const { stdout } = await execFileAsync('docker', ['info', '--format', '{{json .ServerVersion}}']);
@@ -234,16 +368,20 @@ async function checkDocker(): Promise<DoctorCheck> {
 }
 
 export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<DoctorReport> {
-  const catalogCheck = await checkCatalog();
+  const catalogCheck = await checkCatalog(env);
   const playwrightCheck = await checkPlaywright();
   const { daemonConfigCheck, daemonConfig } = await checkDaemonConfig(env);
   const sourceSpecDirsCheck = await checkSourceSpecDirs(daemonConfig);
+  const freshnessCheck = await checkFreshness(env);
+  const daemonHeartbeatCheck = await checkDaemonHeartbeat(env);
   const dockerCheck = await checkDocker();
   const checks = [
     catalogCheck,
     playwrightCheck,
     daemonConfigCheck,
     sourceSpecDirsCheck,
+    freshnessCheck,
+    daemonHeartbeatCheck,
     dockerCheck,
   ];
 

@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact semver version to release (for example 0.2.0)
+        required: true
+        type: string
+      npm_tag:
+        description: npm dist-tag to publish under
+        required: false
+        default: latest
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Prepare release commit and tag
+        shell: bash
+        run: |
+          current_version="$(node -p "require('./package.json').version")"
+          target_version="${{ inputs.version }}"
+
+          if [ "${current_version}" = "${target_version}" ]; then
+            if git rev-parse -q --verify "refs/tags/v${target_version}" >/dev/null; then
+              echo "Reusing existing release state for v${target_version}."
+              exit 0
+            fi
+
+            git tag "v${target_version}"
+            exit 0
+          fi
+
+          if git rev-parse -q --verify "refs/tags/v${target_version}" >/dev/null; then
+            echo "Tag v${target_version} already exists for a different package state." >&2
+            exit 1
+          fi
+
+          npm version "${target_version}" --no-git-tag-version
+          git add package.json
+          git commit -m "release: v${target_version}"
+          git tag "v${target_version}"
+
+      - name: Validate release candidate
+        run: |
+          pnpm lint
+          pnpm test
+          pnpm build
+          npm pack --dry-run
+
+      - name: Push release commit and tag
+        run: |
+          git push origin HEAD:main
+          git push origin "v${{ inputs.version }}"
+
+      - name: Check npm release status
+        id: npm_release
+        shell: bash
+        run: |
+          if npm view "aiocs@${{ inputs.version }}" version >/dev/null 2>&1; then
+            echo "published=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "published=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish to npm
+        if: steps.npm_release.outputs.published != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --tag "${{ inputs.npm_tag }}"
+
+      - name: Check GitHub release status
+        id: gh_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Create GitHub release
+        if: steps.gh_release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "v${{ inputs.version }}" --generate-notes --verify-tag

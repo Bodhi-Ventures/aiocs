@@ -12,8 +12,8 @@ function expandTilde(path: string): string {
   return path;
 }
 
-export function getAiocsDataDir(): string {
-  const override = process.env.AIOCS_DATA_DIR;
+export function getAiocsDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.AIOCS_DATA_DIR;
   if (override) {
     mkdirSync(expandTilde(override), { recursive: true });
     return expandTilde(override);
@@ -24,8 +24,8 @@ export function getAiocsDataDir(): string {
   return target;
 }
 
-export function getAiocsConfigDir(): string {
-  const override = process.env.AIOCS_CONFIG_DIR;
+export function getAiocsConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.AIOCS_CONFIG_DIR;
   if (override) {
     mkdirSync(expandTilde(override), { recursive: true });
     return expandTilde(override);

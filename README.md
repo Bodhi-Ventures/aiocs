@@ -5,10 +5,14 @@ Local-only documentation fetch, versioning, and search CLI for AI agents.
 ## What it does
 
 - fetches docs from websites with Playwright
+- supports authenticated sources via environment-backed headers and cookies
+- runs lightweight canaries to detect source drift before full refreshes
 - normalizes them into Markdown
 - stores immutable local snapshots in a shared catalog
+- diffs snapshots to show what changed between fetches
 - indexes heading-aware chunks in SQLite FTS5
 - links docs sources to local projects for scoped search
+- exports and imports manifest-backed backups for `~/.aiocs`
 
 All state is local. By default, data lives under `~/.aiocs`:
 
@@ -144,10 +148,55 @@ pnpm dev -- search "maker flow" --source hyperliquid
 pnpm dev -- search "maker flow" --all
 pnpm dev -- search "maker flow" --source hyperliquid --limit 5 --offset 0
 pnpm dev -- show 42
+pnpm dev -- canary hyperliquid
+pnpm dev -- diff hyperliquid
+pnpm dev -- backup export /absolute/path/to/backup
 pnpm dev -- verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
+
+### Authenticated sources
+
+Source specs can reference secrets from the environment without storing raw values in YAML:
+
+```yaml
+auth:
+  headers:
+    - name: authorization
+      valueFromEnv: AIOCS_DOCS_TOKEN
+      hosts:
+        - docs.example.com
+      include:
+        - https://docs.example.com/private/**
+  cookies:
+    - name: session
+      valueFromEnv: AIOCS_DOCS_SESSION
+      domain: docs.example.com
+      path: /
+```
+
+Header secrets are scoped per entry. If `hosts` is omitted, the header applies to the source `allowedHosts`; `include` can further narrow it to specific URL patterns.
+
+### Canary checks
+
+Canaries execute the real extraction strategy without creating snapshots. They are intended to catch selector/copy-markdown drift before a full refresh degrades silently.
+
+```yaml
+canary:
+  everyHours: 6
+  checks:
+    - url: https://docs.example.com/start
+      expectedTitle: Private Docs Start
+      expectedText: Secret market structure docs
+      minMarkdownLength: 40
+```
+
+If `canary` is omitted, `aiocs` defaults to a lightweight canary against the first `startUrl`.
+
+### Backups
+
+`backup export` creates a manifest-backed directory snapshot. The catalog database is exported with SQLite's native backup mechanism so the backup stays consistent even if `aiocs` is reading or writing the catalog while the export runs.
 
 ## JSON command reference
 
@@ -159,10 +208,14 @@ All one-shot commands support `--json`:
 - `source upsert`
 - `source list`
 - `fetch`
+- `canary`
 - `refresh due`
 - `snapshot list`
+- `diff`
 - `project link`
 - `project unlink`
+- `backup export`
+- `backup import`
 - `search`
 - `verify coverage`
 - `show`
@@ -174,9 +227,12 @@ pnpm dev -- --json doctor
 pnpm dev -- --json init --no-fetch
 pnpm dev -- --json source upsert sources/hyperliquid.yaml
 pnpm dev -- --json fetch hyperliquid
+pnpm dev -- --json canary hyperliquid
 pnpm dev -- --json refresh due
+pnpm dev -- --json diff hyperliquid
 pnpm dev -- --json project link /absolute/path/to/project hyperliquid lighter
 pnpm dev -- --json snapshot list hyperliquid
+pnpm dev -- --json backup export /absolute/path/to/backup
 pnpm dev -- --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
@@ -212,6 +268,8 @@ Configured source spec directories are treated as the daemon’s source of truth
 - if a managed source spec changes, the source is made due immediately in the same daemon cycle
 - if a managed source spec is removed from disk, the source is removed from the catalog on the next bootstrap
 - if `AIOCS_SOURCE_SPEC_DIRS` is explicitly set but resolves to missing or empty directories, the daemon fails fast instead of silently idling
+- due canaries run independently from full fetch schedules so drift is caught earlier than the next full snapshot refresh
+- daemon heartbeat state is persisted in the local catalog and surfaced through `docs doctor`
 
 Environment variables:
 
@@ -239,7 +297,7 @@ Example event stream:
 ```json
 {"type":"daemon.started","intervalMinutes":60,"fetchOnStart":true,"sourceSpecDirs":["/app/sources"]}
 {"type":"daemon.cycle.started","reason":"startup","startedAt":"2026-03-26T00:00:00.000Z"}
-{"type":"daemon.cycle.completed","reason":"startup","result":{"dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"sources":[]}, "refreshed":[],"failed":[]}}
+{"type":"daemon.cycle.completed","reason":"startup","result":{"canaryDueSourceIds":[],"dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"sources":[]},"canaried":[],"canaryFailed":[],"refreshed":[],"failed":[]}}
 ```
 
 ## MCP server
@@ -258,15 +316,34 @@ The MCP server exposes the same shared operations as the CLI without shell parsi
 - `init`
 - `source_upsert`
 - `source_list`
+- `canary`
 - `fetch`
 - `refresh_due`
 - `snapshot_list`
+- `diff_snapshots`
 - `project_link`
 - `project_unlink`
+- `backup_export`
+- `backup_import`
 - `search`
 - `show`
 - `verify_coverage`
 - `batch`
+
+## Release automation
+
+The repo ships two GitHub Actions workflows:
+
+- [ci.yml](./.github/workflows/ci.yml): validation for lint, tests, build, pack, and Docker smoke coverage
+- [release.yml](./.github/workflows/release.yml): manual release flow that validates the package, prepares or reuses the requested version and tag, publishes to npm, and creates a GitHub release
+
+The release workflow is triggered through `workflow_dispatch` and expects:
+
+- a `version` input
+- an optional `npm_tag` input
+- `NPM_TOKEN` in repository secrets
+
+The release job is retryable: if a version/tag already exists in git or npm, the workflow reuses that state and skips the already-completed publish or GitHub release step instead of forcing manual cleanup.
 
 Successful MCP results use an envelope:
 

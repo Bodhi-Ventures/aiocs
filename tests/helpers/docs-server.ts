@@ -76,6 +76,25 @@ function createRoutes(): Record<string, RouteDefinition> {
         </article>
       `,
     ),
+    '/selector-v2/start': htmlRoute(
+      'Selector Start',
+      `
+        <article>
+          <h1>Selector Start</h1>
+          <p>Maker flow documentation starts here with refreshed content.</p>
+        </article>
+        <a href="/selector-v2/next">Next page</a>
+      `,
+    ),
+    '/selector-v2/next': htmlRoute(
+      'Selector Next',
+      `
+        <article>
+          <h1>Selector Next</h1>
+          <p>Second page content for market making docs with updated wording.</p>
+        </article>
+      `,
+    ),
     '/selector-missing/start': htmlRoute(
       'Selector Missing Start',
       `
@@ -351,6 +370,15 @@ function createRoutes(): Record<string, RouteDefinition> {
         });
       `,
     ),
+    '/auth/start': htmlRoute(
+      'Authenticated Start',
+      `
+        <article>
+          <h1>Private Docs Start</h1>
+          <p>Secret market structure docs for authenticated sources.</p>
+        </article>
+      `,
+    ),
   };
 }
 
@@ -372,6 +400,28 @@ export async function startDocsServer(): Promise<RunningServer> {
 
     const currentCount = (requestCounts.get(url.pathname) ?? 0) + 1;
     requestCounts.set(url.pathname, currentCount);
+
+    if (url.pathname === '/auth/start') {
+      const headerToken = request.headers['x-aiocs-token'];
+      const cookieHeader = request.headers.cookie ?? '';
+      const hasSessionCookie = cookieHeader.includes('aiocs_session=cookie-secret');
+
+      if (headerToken !== 'header-secret' || !hasSessionCookie) {
+        sendRoute(response, routeWithStatus(
+          401,
+          htmlRoute(
+            'Unauthorized',
+            `
+              <main>
+                <h1>Unauthorized</h1>
+                <p>Authenticated request missing required headers or cookies.</p>
+              </main>
+            `,
+          ),
+        ));
+        return;
+      }
+    }
 
     if (url.pathname === '/selector-flaky/start' && currentCount < 3) {
       sendRoute(response, routeWithStatus(

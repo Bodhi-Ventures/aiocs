@@ -54,4 +54,23 @@ describe('release assets', () => {
     expect(skillBody).toContain('--json');
     expect(skillBody).toContain('aiocs-mcp');
   });
+
+  it('ships CI and release workflows aligned with validation and npm publishing', () => {
+    const ciWorkflowPath = join(repoRoot, '.github', 'workflows', 'ci.yml');
+    const releaseWorkflowPath = join(repoRoot, '.github', 'workflows', 'release.yml');
+
+    expect(existsSync(ciWorkflowPath)).toBe(true);
+    expect(readFileSync(ciWorkflowPath, 'utf8')).toContain('npm pack --dry-run');
+    expect(readFileSync(ciWorkflowPath, 'utf8')).toContain('docker build');
+
+    expect(existsSync(releaseWorkflowPath)).toBe(true);
+    const workflow = readFileSync(releaseWorkflowPath, 'utf8');
+    expect(workflow).toContain('workflow_dispatch');
+    expect(workflow).toContain('npm publish --provenance');
+    expect(workflow).toContain('gh release create');
+    expect(workflow).toContain('git tag');
+    expect(workflow.indexOf('npm version')).toBeLessThan(workflow.indexOf('pnpm build'));
+    expect(workflow.indexOf('git push origin main')).toBeLessThan(workflow.indexOf('npm publish --provenance'));
+    expect(workflow.indexOf('npm publish --provenance')).toBeLessThan(workflow.indexOf('gh release create'));
+  });
 });

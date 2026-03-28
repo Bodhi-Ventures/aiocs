@@ -7,13 +7,17 @@ import { z } from 'zod';
 import { AiocsError, AIOCS_ERROR_CODES, toAiocsError } from './errors.js';
 import { packageDescription, packageName, packageVersion } from './runtime/package-metadata.js';
 import {
+  diffSnapshotsForSource,
+  exportCatalogBackup,
   fetchSources,
   getDoctorReport,
+  importCatalogBackup,
   initBuiltInSources,
   linkProjectSources,
   listSnapshotsForSource,
   listSources,
   refreshDueSources,
+  runSourceCanaries,
   searchCatalog,
   showChunk,
   unlinkProjectSources,
@@ -43,8 +47,13 @@ const sourceSchema = z.object({
   id: z.string(),
   label: z.string(),
   nextDueAt: z.string(),
+  nextCanaryDueAt: z.string().nullable(),
   lastCheckedAt: z.string().nullable(),
+  lastSuccessfulSnapshotAt: z.string().nullable(),
   lastSuccessfulSnapshotId: z.string().nullable(),
+  lastCanaryCheckedAt: z.string().nullable(),
+  lastSuccessfulCanaryAt: z.string().nullable(),
+  lastCanaryStatus: z.enum(['pass', 'fail']).nullable(),
 });
 
 const fetchResultSchema = z.object({
@@ -96,6 +105,64 @@ const coverageVerificationSchema = z.object({
       sectionTitle: z.number().int().nonnegative(),
       body: z.number().int().nonnegative(),
     }),
+  })),
+});
+
+const canaryResultSchema = z.object({
+  sourceId: z.string(),
+  status: z.enum(['pass', 'fail']),
+  checkedAt: z.string(),
+  summary: z.object({
+    checkCount: z.number().int().nonnegative(),
+    passCount: z.number().int().nonnegative(),
+    failCount: z.number().int().nonnegative(),
+  }),
+  checks: z.array(z.object({
+    url: z.string(),
+    status: z.enum(['pass', 'fail']),
+    title: z.string().optional(),
+    markdownLength: z.number().int().nonnegative().optional(),
+    errorMessage: z.string().optional(),
+  })),
+});
+
+const snapshotDiffSchema = z.object({
+  sourceId: z.string(),
+  fromSnapshotId: z.string(),
+  toSnapshotId: z.string(),
+  summary: z.object({
+    addedPageCount: z.number().int().nonnegative(),
+    removedPageCount: z.number().int().nonnegative(),
+    changedPageCount: z.number().int().nonnegative(),
+    unchangedPageCount: z.number().int().nonnegative(),
+  }),
+  addedPages: z.array(z.object({
+    url: z.string(),
+    title: z.string(),
+  })),
+  removedPages: z.array(z.object({
+    url: z.string(),
+    title: z.string(),
+  })),
+  changedPages: z.array(z.object({
+    url: z.string(),
+    beforeTitle: z.string(),
+    afterTitle: z.string(),
+    lineSummary: z.object({
+      addedLineCount: z.number().int().nonnegative(),
+      removedLineCount: z.number().int().nonnegative(),
+    }),
+  })),
+});
+
+const backupManifestSchema = z.object({
+  formatVersion: z.literal(1),
+  createdAt: z.string(),
+  packageVersion: z.string(),
+  entries: z.array(z.object({
+    relativePath: z.string(),
+    type: z.enum(['file', 'directory']),
+    size: z.number().int().nonnegative(),
   })),
 });
 
@@ -163,8 +230,14 @@ const toolHandlers: Record<string, ToolHandler> = {
   source_upsert: async (args = {}) => upsertSourceFromSpecFile(args.specFile as string),
   source_list: async () => listSources(),
   fetch: async (args = {}) => fetchSources(args.sourceIdOrAll as string),
+  canary: async (args = {}) => runSourceCanaries(args.sourceIdOrAll as string),
   refresh_due: async () => refreshDueSources(),
   snapshot_list: async (args = {}) => listSnapshotsForSource(args.sourceId as string),
+  diff_snapshots: async (args = {}) => diffSnapshotsForSource({
+    sourceId: args.sourceId as string,
+    ...(typeof args.fromSnapshotId === 'string' ? { fromSnapshotId: args.fromSnapshotId } : {}),
+    ...(typeof args.toSnapshotId === 'string' ? { toSnapshotId: args.toSnapshotId } : {}),
+  }),
   project_link: async (args = {}) =>
     linkProjectSources(args.projectPath as string, args.sourceIds as string[]),
   project_unlink: async (args = {}) =>
@@ -178,6 +251,16 @@ const toolHandlers: Record<string, ToolHandler> = {
     ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
   }),
   show: async (args = {}) => showChunk(args.chunkId as number),
+  backup_export: async (args = {}) =>
+    exportCatalogBackup({
+      outputDir: args.outputDir as string,
+      ...(typeof args.replaceExisting === 'boolean' ? { replaceExisting: args.replaceExisting } : {}),
+    }),
+  backup_import: async (args = {}) =>
+    importCatalogBackup({
+      inputDir: args.inputDir as string,
+      ...(typeof args.replaceExisting === 'boolean' ? { replaceExisting: args.replaceExisting } : {}),
+    }),
   verify_coverage: async (args = {}) =>
     verifyCoverage({
       sourceId: args.sourceId as string,
@@ -345,6 +428,20 @@ registerAiocsTool(
 );
 
 registerAiocsTool(
+  'canary',
+  {
+    title: 'Canary',
+    description: 'Run lightweight source extraction canaries without creating snapshots.',
+    inputSchema: z.object({
+      sourceIdOrAll: z.string(),
+    }),
+    outputSchema: z.object({
+      results: z.array(canaryResultSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
   'refresh_due',
   {
     title: 'Refresh due',
@@ -373,6 +470,20 @@ registerAiocsTool(
         pageCount: z.number().int().nonnegative(),
       })),
     }),
+  },
+);
+
+registerAiocsTool(
+  'diff_snapshots',
+  {
+    title: 'Diff snapshots',
+    description: 'Compare two source snapshots and report added, removed, and changed pages.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+      fromSnapshotId: z.string().optional(),
+      toSnapshotId: z.string().optional(),
+    }),
+    outputSchema: snapshotDiffSchema,
   },
 );
 
@@ -443,6 +554,41 @@ registerAiocsTool(
     }),
     outputSchema: z.object({
       chunk: searchResultSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'backup_export',
+  {
+    title: 'Backup export',
+    description: 'Export the local aiocs data and config into a manifest-backed backup directory.',
+    inputSchema: z.object({
+      outputDir: z.string(),
+      replaceExisting: z.boolean().optional(),
+    }),
+    outputSchema: z.object({
+      outputDir: z.string(),
+      manifestPath: z.string(),
+      manifest: backupManifestSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'backup_import',
+  {
+    title: 'Backup import',
+    description: 'Import a manifest-backed aiocs backup into the local data and config directories.',
+    inputSchema: z.object({
+      inputDir: z.string(),
+      replaceExisting: z.boolean().optional(),
+    }),
+    outputSchema: z.object({
+      inputDir: z.string(),
+      dataDir: z.string(),
+      configDir: z.string().optional(),
+      manifest: backupManifestSchema,
     }),
   },
 );
