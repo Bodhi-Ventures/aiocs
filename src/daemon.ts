@@ -3,8 +3,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import type { Catalog } from './catalog/catalog.js';
 import { fetchSource, runSourceCanary } from './fetch/fetch-source.js';
+import { processEmbeddingJobs } from './hybrid/worker.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
+import { getHybridRuntimeConfig } from './runtime/hybrid-config.js';
 import { pathExists, uniqueResolvedPaths, walkSourceSpecFiles } from './spec/source-spec-files.js';
 
 const DEFAULT_INTERVAL_MINUTES = 60;
@@ -60,6 +62,18 @@ export type FailedCanary = {
   errorMessage: string;
 };
 
+export type EmbeddedSnapshot = {
+  sourceId: string;
+  snapshotId: string;
+  chunkCount: number;
+};
+
+export type FailedEmbedding = {
+  sourceId: string;
+  snapshotId: string;
+  errorMessage: string;
+};
+
 export type DaemonCycleResult = {
   startedAt: string;
   finishedAt: string;
@@ -70,6 +84,8 @@ export type DaemonCycleResult = {
   canaryFailed: FailedCanary[];
   refreshed: RefreshedSource[];
   failed: FailedRefresh[];
+  embedded: EmbeddedSnapshot[];
+  embeddingFailed: FailedEmbedding[];
 };
 
 export type DaemonEvent =
@@ -268,6 +284,8 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
   const canaryFailed: FailedCanary[] = [];
   const refreshed: RefreshedSource[] = [];
   const failed: FailedRefresh[] = [];
+  const embedded: EmbeddedSnapshot[] = [];
+  const embeddingFailed: FailedEmbedding[] = [];
 
   for (const sourceId of canaryDueSourceIds) {
     try {
@@ -318,6 +336,21 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
     }
   }
 
+  try {
+    const embeddingResult = await processEmbeddingJobs({
+      catalog: input.catalog,
+      config: getHybridRuntimeConfig(process.env),
+    });
+    embedded.push(...embeddingResult.succeededJobs);
+    embeddingFailed.push(...embeddingResult.failedJobs);
+  } catch (error) {
+    embeddingFailed.push({
+      sourceId: 'system',
+      snapshotId: 'system',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   return {
     startedAt,
     finishedAt: nowIso(),
@@ -328,11 +361,14 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
     canaryFailed,
     refreshed,
     failed,
+    embedded,
+    embeddingFailed,
   };
 }
 
 export async function startDaemon(input: StartDaemonInput): Promise<void> {
   const intervalMs = input.config.intervalMinutes * 60_000;
+  input.catalog.resetRunningEmbeddingJobs();
   input.catalog.markDaemonStarted({
     startedAt: nowIso(),
     intervalMinutes: input.config.intervalMinutes,
@@ -363,7 +399,9 @@ export async function startDaemon(input: StartDaemonInput): Promise<void> {
       });
       input.catalog.markDaemonCycleCompleted({
         completedAt: result.finishedAt,
-        status: result.failed.length > 0 || result.canaryFailed.length > 0 ? 'degraded' : 'success',
+        status: result.failed.length > 0 || result.canaryFailed.length > 0 || result.embeddingFailed.length > 0
+          ? 'degraded'
+          : 'success',
       });
       input.logger.emit({
         type: 'daemon.cycle.completed',

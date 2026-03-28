@@ -69,6 +69,50 @@ type DaemonStateRow = {
   fetch_on_start: number | null;
 };
 
+type SearchScope = {
+  limit: number;
+  offset: number;
+  sourceIds: string[] | null;
+  snapshotIds: string[];
+};
+
+type SearchResult = {
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  results: SearchRow[];
+};
+
+type EmbeddingChunkRecord = ChunkRecord & {
+  contentHash: string;
+};
+
+type EmbeddingJobStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+
+type EmbeddingJobRecord = {
+  sourceId: string;
+  snapshotId: string;
+  status: EmbeddingJobStatus;
+  attemptCount: number;
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+  claimedAt: string | null;
+  completedAt: string | null;
+  errorMessage: string | null;
+};
+
+type EmbeddingOverviewRow = {
+  source_id: string;
+  snapshot_id: string | null;
+  total_chunks: number;
+  indexed_chunks: number;
+  pending_chunks: number;
+  failed_chunks: number;
+  stale_chunks: number;
+};
+
 function initSchema(db: Database.Database): void {
   db.exec(`
     PRAGMA foreign_keys = ON;
@@ -184,6 +228,39 @@ function initSchema(db: Database.Database): void {
       interval_minutes INTEGER,
       fetch_on_start INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS embedding_state (
+      chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      content_hash TEXT NOT NULL,
+      model_key TEXT,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'indexed', 'failed', 'stale')),
+      vector_point_id TEXT,
+      last_attempted_at TEXT,
+      indexed_at TEXT,
+      error_message TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS embedding_jobs (
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      chunk_count INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      claimed_at TEXT,
+      completed_at TEXT,
+      error_message TEXT,
+      PRIMARY KEY(source_id, snapshot_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_embedding_jobs_status_updated
+      ON embedding_jobs(status, updated_at, source_id, snapshot_id);
+
+    CREATE INDEX IF NOT EXISTS idx_embedding_state_source_snapshot
+      ON embedding_state(source_id, snapshot_id, status);
   `);
 
   const sourceColumns = db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>;
@@ -283,6 +360,311 @@ export function openCatalog(options: OpenCatalogOptions) {
     }
 
     return [...grouped.entries()].map(([projectPath, sourceIds]) => ({ projectPath, sourceIds }));
+  };
+
+  const resolveSearchScope = (input: SearchInput): SearchScope => {
+    const limit = assertPaginationValue(input.limit, 'limit', 20);
+    const offset = assertPaginationValue(input.offset, 'offset', 0);
+
+    let sourceIds = input.sourceIds ? [...input.sourceIds] : undefined;
+    if (!sourceIds || sourceIds.length === 0) {
+      if (input.cwd) {
+        const scope = resolveProjectScope(
+          input.cwd,
+          listProjectLinks().map((link) => ({
+            projectPath: link.projectPath,
+            sourceIds: link.sourceIds,
+          })),
+        );
+        if (scope) {
+          sourceIds = scope.sourceIds;
+        }
+      }
+    }
+
+    if ((!sourceIds || sourceIds.length === 0) && !input.all) {
+      return {
+        limit,
+        offset,
+        sourceIds: null,
+        snapshotIds: [],
+      };
+    }
+
+    const filterSourceIds = sourceIds && sourceIds.length > 0 ? [...new Set(sourceIds)] : null;
+    const latestSnapshotIds = input.snapshotId
+      ? [input.snapshotId]
+      : (db.prepare(`
+          SELECT last_successful_snapshot_id AS snapshot_id
+          FROM sources
+          WHERE last_successful_snapshot_id IS NOT NULL
+          ${filterSourceIds ? `AND id IN (${filterSourceIds.map(() => '?').join(',')})` : ''}
+        `).all(...(filterSourceIds ?? [])) as Array<{ snapshot_id: string }>).map((row) => row.snapshot_id);
+
+    return {
+      limit,
+      offset,
+      sourceIds: filterSourceIds,
+      snapshotIds: latestSnapshotIds,
+    };
+  };
+
+  const searchLexicalByScope = (input: {
+    query: string;
+    scope: SearchScope;
+    limit?: number;
+    offset?: number;
+  }): SearchResult => {
+    const normalized = normalizeQuery(input.query);
+    const limit = assertPaginationValue(input.limit, 'limit', input.scope.limit);
+    const offset = assertPaginationValue(input.offset, 'offset', input.scope.offset);
+
+    if (!normalized || input.scope.snapshotIds.length === 0) {
+      return {
+        total: 0,
+        limit,
+        offset,
+        hasMore: false,
+        results: [],
+      };
+    }
+
+    const whereSnapshotPlaceholders = input.scope.snapshotIds.map(() => '?').join(',');
+    const sourceSql = input.scope.sourceIds
+      ? `AND c.source_id IN (${input.scope.sourceIds.map(() => '?').join(',')})`
+      : '';
+    const queryArgs = [
+      normalized,
+      ...input.scope.snapshotIds,
+      ...(input.scope.sourceIds ?? []),
+    ];
+
+    const totalRow = db.prepare(`
+      SELECT COUNT(*) AS total
+      FROM chunks_fts
+      JOIN chunks c ON c.id = chunks_fts.rowid
+      WHERE chunks_fts MATCH ?
+        AND c.snapshot_id IN (${whereSnapshotPlaceholders})
+        ${sourceSql}
+    `).get(...queryArgs) as { total: number };
+
+    const rows = db.prepare(`
+      SELECT
+        c.id AS chunk_id,
+        c.source_id,
+        c.snapshot_id,
+        c.page_url,
+        c.page_title,
+        c.section_title,
+        c.markdown
+      FROM chunks_fts
+      JOIN chunks c ON c.id = chunks_fts.rowid
+      WHERE chunks_fts MATCH ?
+        AND c.snapshot_id IN (${whereSnapshotPlaceholders})
+        ${sourceSql}
+      ORDER BY bm25(chunks_fts), c.id
+      LIMIT ?
+      OFFSET ?
+    `).all(...queryArgs, limit, offset) as Array<{
+      chunk_id: number;
+      source_id: string;
+      snapshot_id: string;
+      page_url: string;
+      page_title: string;
+      section_title: string;
+      markdown: string;
+    }>;
+
+    const results = rows.map((row) => ({
+      chunkId: row.chunk_id,
+      sourceId: row.source_id,
+      snapshotId: row.snapshot_id,
+      pageUrl: row.page_url,
+      pageTitle: row.page_title,
+      sectionTitle: row.section_title,
+      markdown: row.markdown,
+    }));
+
+    return {
+      total: totalRow.total,
+      limit,
+      offset,
+      hasMore: offset + results.length < totalRow.total,
+      results,
+    };
+  };
+
+  const listLatestSnapshots = (sourceIds?: string[]): Array<{ sourceId: string; snapshotId: string }> => {
+    const filterSourceIds = sourceIds && sourceIds.length > 0 ? [...new Set(sourceIds)] : null;
+    const rows = db.prepare(`
+      SELECT id AS source_id, last_successful_snapshot_id AS snapshot_id
+      FROM sources
+      WHERE last_successful_snapshot_id IS NOT NULL
+      ${filterSourceIds ? `AND id IN (${filterSourceIds.map(() => '?').join(',')})` : ''}
+      ORDER BY id
+    `).all(...(filterSourceIds ?? [])) as Array<{
+      source_id: string;
+      snapshot_id: string;
+    }>;
+
+    return rows.map((row) => ({
+      sourceId: row.source_id,
+      snapshotId: row.snapshot_id,
+    }));
+  };
+
+  const queueEmbeddingJobForSnapshot = (
+    sourceId: string,
+    snapshotId: string,
+    previousLatestSnapshotId?: string | null,
+  ): void => {
+    const timestamp = nowIso();
+
+    if (previousLatestSnapshotId && previousLatestSnapshotId !== snapshotId) {
+      db.prepare(`
+        UPDATE embedding_state
+        SET
+          status = 'stale',
+          vector_point_id = NULL,
+          indexed_at = NULL,
+          error_message = NULL
+        WHERE source_id = ?
+          AND snapshot_id = ?
+      `).run(sourceId, previousLatestSnapshotId);
+
+      db.prepare(`
+        DELETE FROM embedding_jobs
+        WHERE source_id = ?
+          AND snapshot_id = ?
+      `).run(sourceId, previousLatestSnapshotId);
+    }
+
+    const chunkRows = db.prepare(`
+      SELECT id, markdown
+      FROM chunks
+      WHERE source_id = ?
+        AND snapshot_id = ?
+      ORDER BY id
+    `).all(sourceId, snapshotId) as Array<{
+      id: number;
+      markdown: string;
+    }>;
+
+    const upsertState = db.prepare(`
+      INSERT INTO embedding_state (
+        chunk_id,
+        source_id,
+        snapshot_id,
+        content_hash,
+        model_key,
+        status,
+        vector_point_id,
+        last_attempted_at,
+        indexed_at,
+        error_message
+      ) VALUES (?, ?, ?, ?, NULL, 'pending', NULL, NULL, NULL, NULL)
+      ON CONFLICT(chunk_id) DO UPDATE SET
+        source_id = excluded.source_id,
+        snapshot_id = excluded.snapshot_id,
+        content_hash = excluded.content_hash,
+        model_key = CASE
+          WHEN embedding_state.status = 'indexed' AND embedding_state.content_hash = excluded.content_hash
+            THEN embedding_state.model_key
+          ELSE NULL
+        END,
+        status = CASE
+          WHEN embedding_state.status = 'indexed' AND embedding_state.content_hash = excluded.content_hash
+            THEN 'indexed'
+          ELSE 'pending'
+        END,
+        vector_point_id = CASE
+          WHEN embedding_state.status = 'indexed' AND embedding_state.content_hash = excluded.content_hash
+            THEN embedding_state.vector_point_id
+          ELSE NULL
+        END,
+        last_attempted_at = CASE
+          WHEN embedding_state.status = 'indexed' AND embedding_state.content_hash = excluded.content_hash
+            THEN embedding_state.last_attempted_at
+          ELSE NULL
+        END,
+        indexed_at = CASE
+          WHEN embedding_state.status = 'indexed' AND embedding_state.content_hash = excluded.content_hash
+            THEN embedding_state.indexed_at
+          ELSE NULL
+        END,
+        error_message = CASE
+          WHEN embedding_state.status = 'indexed' AND embedding_state.content_hash = excluded.content_hash
+            THEN embedding_state.error_message
+          ELSE NULL
+        END
+    `);
+
+    const transaction = db.transaction(() => {
+      for (const chunk of chunkRows) {
+        upsertState.run(
+          chunk.id,
+          sourceId,
+          snapshotId,
+          sha256(chunk.markdown),
+        );
+      }
+    });
+    transaction();
+
+    const pendingRow = db.prepare(`
+      SELECT COUNT(*) AS pending_count
+      FROM embedding_state
+      WHERE source_id = ?
+        AND snapshot_id = ?
+        AND status != 'indexed'
+    `).get(sourceId, snapshotId) as { pending_count: number };
+
+    if (pendingRow.pending_count === 0) {
+      db.prepare(`
+        INSERT INTO embedding_jobs (
+          source_id,
+          snapshot_id,
+          status,
+          attempt_count,
+          chunk_count,
+          created_at,
+          updated_at,
+          claimed_at,
+          completed_at,
+          error_message
+        ) VALUES (?, ?, 'succeeded', 0, ?, ?, ?, NULL, ?, NULL)
+        ON CONFLICT(source_id, snapshot_id) DO UPDATE SET
+          status = 'succeeded',
+          chunk_count = excluded.chunk_count,
+          updated_at = excluded.updated_at,
+          claimed_at = NULL,
+          completed_at = excluded.completed_at,
+          error_message = NULL
+      `).run(sourceId, snapshotId, chunkRows.length, timestamp, timestamp, timestamp);
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO embedding_jobs (
+        source_id,
+        snapshot_id,
+        status,
+        attempt_count,
+        chunk_count,
+        created_at,
+        updated_at,
+        claimed_at,
+        completed_at,
+        error_message
+      ) VALUES (?, ?, 'pending', 0, ?, ?, ?, NULL, NULL, NULL)
+      ON CONFLICT(source_id, snapshot_id) DO UPDATE SET
+        status = 'pending',
+        chunk_count = excluded.chunk_count,
+        updated_at = excluded.updated_at,
+        claimed_at = NULL,
+        completed_at = NULL,
+        error_message = NULL
+    `).run(sourceId, snapshotId, chunkRows.length, timestamp, timestamp);
   };
 
   return {
@@ -476,8 +858,12 @@ export function openCatalog(options: OpenCatalogOptions) {
 
     recordSuccessfulSnapshot(input: RecordSuccessfulSnapshotInput): { snapshotId: string; reused: boolean } {
       const sourceRow = db
-        .prepare('SELECT config_hash, spec_json FROM sources WHERE id = ?')
-        .get(input.sourceId) as { config_hash: string; spec_json: string } | undefined;
+        .prepare('SELECT config_hash, spec_json, last_successful_snapshot_id FROM sources WHERE id = ?')
+        .get(input.sourceId) as {
+          config_hash: string;
+          spec_json: string;
+          last_successful_snapshot_id: string | null;
+        } | undefined;
 
       if (!sourceRow) {
         throw new AiocsError(
@@ -515,6 +901,12 @@ export function openCatalog(options: OpenCatalogOptions) {
           SET last_checked_at = ?, last_successful_snapshot_at = ?, last_successful_snapshot_id = ?, next_due_at = ?, updated_at = ?
           WHERE id = ?
         `).run(checkedAt, checkedAt, existing.id, nextDueAt, checkedAt, input.sourceId);
+
+        queueEmbeddingJobForSnapshot(
+          input.sourceId,
+          existing.id,
+          sourceRow.last_successful_snapshot_id,
+        );
 
         db.prepare(`
           INSERT INTO fetch_runs (id, source_id, status, snapshot_id, started_at, finished_at)
@@ -581,6 +973,12 @@ export function openCatalog(options: OpenCatalogOptions) {
           SET last_checked_at = ?, last_successful_snapshot_at = ?, last_successful_snapshot_id = ?, next_due_at = ?, updated_at = ?
           WHERE id = ?
         `).run(checkedAt, checkedAt, snapshotId, nextDueAt, checkedAt, input.sourceId);
+
+        queueEmbeddingJobForSnapshot(
+          input.sourceId,
+          snapshotId,
+          sourceRow.last_successful_snapshot_id,
+        );
 
         insertRun.run(randomUUID(), input.sourceId, snapshotId, checkedAt, checkedAt);
       });
@@ -891,88 +1289,35 @@ export function openCatalog(options: OpenCatalogOptions) {
       };
     },
 
-    search(input: SearchInput): {
-      total: number;
-      limit: number;
-      offset: number;
-      hasMore: boolean;
-      results: SearchRow[];
-    } {
-      const normalized = normalizeQuery(input.query);
-      if (!normalized) {
-        return {
-          total: 0,
-          limit: assertPaginationValue(input.limit, 'limit', 20),
-          offset: assertPaginationValue(input.offset, 'offset', 0),
-          hasMore: false,
-          results: [],
-        };
-      }
-      const limit = assertPaginationValue(input.limit, 'limit', 20);
-      const offset = assertPaginationValue(input.offset, 'offset', 0);
+    resolveSearchScope(input: SearchInput): SearchScope {
+      return resolveSearchScope(input);
+    },
 
-      let sourceIds = input.sourceIds ? [...input.sourceIds] : undefined;
-      if (!sourceIds || sourceIds.length === 0) {
-        if (input.cwd) {
-          const scope = resolveProjectScope(
-            input.cwd,
-            listProjectLinks().map((link) => ({
-              projectPath: link.projectPath,
-              sourceIds: link.sourceIds,
-            })),
-          );
-          if (scope) {
-            sourceIds = scope.sourceIds;
-          }
-        }
-      }
+    searchLexical(input: {
+      query: string;
+      scope: SearchScope;
+      limit?: number;
+      offset?: number;
+    }): SearchResult {
+      return searchLexicalByScope(input);
+    },
 
-      if ((!sourceIds || sourceIds.length === 0) && !input.all) {
-        return {
-          total: 0,
-          limit,
-          offset,
-          hasMore: false,
-          results: [],
-        };
-      }
+    search(input: SearchInput): SearchResult {
+      return searchLexicalByScope({
+        query: input.query,
+        scope: resolveSearchScope(input),
+      });
+    },
 
-      const filterSourceIds = sourceIds && sourceIds.length > 0 ? [...new Set(sourceIds)] : null;
-      const latestSnapshotIds = input.snapshotId
-        ? [input.snapshotId]
-        : (db.prepare(`
-            SELECT last_successful_snapshot_id AS snapshot_id
-            FROM sources
-            WHERE last_successful_snapshot_id IS NOT NULL
-            ${filterSourceIds ? `AND id IN (${filterSourceIds.map(() => '?').join(',')})` : ''}
-          `).all(...(filterSourceIds ?? [])) as Array<{ snapshot_id: string }>).map((row) => row.snapshot_id);
+    listLatestSnapshots(sourceIds?: string[]): Array<{ sourceId: string; snapshotId: string }> {
+      return listLatestSnapshots(sourceIds);
+    },
 
-      if (latestSnapshotIds.length === 0) {
-        return {
-          total: 0,
-          limit,
-          offset,
-          hasMore: false,
-          results: [],
-        };
-      }
-
-      const whereSnapshotPlaceholders = latestSnapshotIds.map(() => '?').join(',');
-      const sourceSql = filterSourceIds ? `AND c.source_id IN (${filterSourceIds.map(() => '?').join(',')})` : '';
-      const queryArgs = [
-        normalized,
-        ...latestSnapshotIds,
-        ...(filterSourceIds ?? []),
-      ];
-      const totalRow = db.prepare(`
-        SELECT COUNT(*) AS total
-        FROM chunks_fts
-        JOIN chunks c ON c.id = chunks_fts.rowid
-        WHERE chunks_fts MATCH ?
-          AND c.snapshot_id IN (${whereSnapshotPlaceholders})
-          ${sourceSql}
-      `).get(...queryArgs) as { total: number };
-      const statement = db.prepare(`
+    listSnapshotChunks(input: {
+      sourceId: string;
+      snapshotId: string;
+    }): EmbeddingChunkRecord[] {
+      const rows = db.prepare(`
         SELECT
           c.id AS chunk_id,
           c.source_id,
@@ -981,21 +1326,11 @@ export function openCatalog(options: OpenCatalogOptions) {
           c.page_title,
           c.section_title,
           c.markdown
-        FROM chunks_fts
-        JOIN chunks c ON c.id = chunks_fts.rowid
-        WHERE chunks_fts MATCH ?
-          AND c.snapshot_id IN (${whereSnapshotPlaceholders})
-          ${sourceSql}
-        ORDER BY bm25(chunks_fts), c.id
-        LIMIT ?
-        OFFSET ?
-      `);
-
-      const rows = statement.all(
-        ...queryArgs,
-        limit,
-        offset,
-      ) as Array<{
+        FROM chunks c
+        WHERE c.source_id = ?
+          AND c.snapshot_id = ?
+        ORDER BY c.id
+      `).all(input.sourceId, input.snapshotId) as Array<{
         chunk_id: number;
         source_id: string;
         snapshot_id: string;
@@ -1005,7 +1340,99 @@ export function openCatalog(options: OpenCatalogOptions) {
         markdown: string;
       }>;
 
-      const results = rows.map((row) => ({
+      return rows.map((row) => ({
+        chunkId: row.chunk_id,
+        sourceId: row.source_id,
+        snapshotId: row.snapshot_id,
+        pageUrl: row.page_url,
+        pageTitle: row.page_title,
+        sectionTitle: row.section_title,
+        markdown: row.markdown,
+        contentHash: sha256(row.markdown),
+      }));
+    },
+
+    getSnapshotEmbeddingState(input: {
+      sourceId: string;
+      snapshotId: string;
+    }): Array<{
+      chunkId: number;
+      status: 'pending' | 'indexed' | 'failed' | 'stale';
+      modelKey: string | null;
+      contentHash: string;
+    }> {
+      const rows = db.prepare(`
+        SELECT chunk_id, status, model_key, content_hash
+        FROM embedding_state
+        WHERE source_id = ?
+          AND snapshot_id = ?
+        ORDER BY chunk_id
+      `).all(input.sourceId, input.snapshotId) as Array<{
+        chunk_id: number;
+        status: 'pending' | 'indexed' | 'failed' | 'stale';
+        model_key: string | null;
+        content_hash: string;
+      }>;
+
+      return rows.map((row) => ({
+        chunkId: row.chunk_id,
+        status: row.status,
+        modelKey: row.model_key,
+        contentHash: row.content_hash,
+      }));
+    },
+
+    listStaleEmbeddingChunkIds(sourceId: string): number[] {
+      const rows = db.prepare(`
+        SELECT chunk_id
+        FROM embedding_state
+        WHERE source_id = ?
+          AND status = 'stale'
+        ORDER BY chunk_id
+      `).all(sourceId) as Array<{ chunk_id: number }>;
+
+      return rows.map((row) => row.chunk_id);
+    },
+
+    listEmbeddingChunkIds(sourceIds?: string[]): number[] {
+      const filterSourceIds = sourceIds && sourceIds.length > 0 ? [...new Set(sourceIds)] : null;
+      const rows = db.prepare(`
+        SELECT chunk_id
+        FROM embedding_state
+        ${filterSourceIds ? `WHERE source_id IN (${filterSourceIds.map(() => '?').join(',')})` : ''}
+        ORDER BY chunk_id
+      `).all(...(filterSourceIds ?? [])) as Array<{ chunk_id: number }>;
+
+      return rows.map((row) => row.chunk_id);
+    },
+
+    getChunksByIds(chunkIds: number[]): ChunkRecord[] {
+      if (chunkIds.length === 0) {
+        return [];
+      }
+
+      const rows = db.prepare(`
+        SELECT
+          c.id AS chunk_id,
+          c.source_id,
+          c.snapshot_id,
+          c.page_url,
+          c.page_title,
+          c.section_title,
+          c.markdown
+        FROM chunks c
+        WHERE c.id IN (${chunkIds.map(() => '?').join(',')})
+      `).all(...chunkIds) as Array<{
+        chunk_id: number;
+        source_id: string;
+        snapshot_id: string;
+        page_url: string;
+        page_title: string;
+        section_title: string;
+        markdown: string;
+      }>;
+
+      return rows.map((row) => ({
         chunkId: row.chunk_id,
         sourceId: row.source_id,
         snapshotId: row.snapshot_id,
@@ -1014,13 +1441,346 @@ export function openCatalog(options: OpenCatalogOptions) {
         sectionTitle: row.section_title,
         markdown: row.markdown,
       }));
+    },
+
+    queueLatestEmbeddingJobs(sourceIds?: string[]): { queuedJobs: number } {
+      const latestSnapshots = listLatestSnapshots(sourceIds);
+      const transaction = db.transaction((snapshots: Array<{ sourceId: string; snapshotId: string }>) => {
+        for (const snapshot of snapshots) {
+          queueEmbeddingJobForSnapshot(snapshot.sourceId, snapshot.snapshotId);
+        }
+      });
+      transaction(latestSnapshots);
+      return {
+        queuedJobs: latestSnapshots.length,
+      };
+    },
+
+    requeueLatestEmbeddingJobs(sourceIds?: string[]): { queuedJobs: number } {
+      const latestSnapshots = listLatestSnapshots(sourceIds);
+      const transaction = db.transaction((snapshots: Array<{ sourceId: string; snapshotId: string }>) => {
+        for (const snapshot of snapshots) {
+          db.prepare(`
+            UPDATE embedding_state
+            SET
+              status = 'pending',
+              model_key = NULL,
+              vector_point_id = NULL,
+              last_attempted_at = NULL,
+              indexed_at = NULL,
+              error_message = NULL
+            WHERE source_id = ?
+              AND snapshot_id = ?
+          `).run(snapshot.sourceId, snapshot.snapshotId);
+
+          queueEmbeddingJobForSnapshot(snapshot.sourceId, snapshot.snapshotId);
+        }
+      });
+      transaction(latestSnapshots);
 
       return {
-        total: totalRow.total,
-        limit,
-        offset,
-        hasMore: offset + results.length < totalRow.total,
-        results,
+        queuedJobs: latestSnapshots.length,
+      };
+    },
+
+    resetEmbeddingsAfterImport(): { queuedJobs: number } {
+      const transaction = db.transaction(() => {
+        db.prepare('DELETE FROM embedding_jobs').run();
+        db.prepare('DELETE FROM embedding_state').run();
+      });
+      transaction();
+      const latestSnapshots = listLatestSnapshots();
+      const queueTransaction = db.transaction((snapshots: Array<{ sourceId: string; snapshotId: string }>) => {
+        for (const snapshot of snapshots) {
+          queueEmbeddingJobForSnapshot(snapshot.sourceId, snapshot.snapshotId);
+        }
+      });
+      queueTransaction(latestSnapshots);
+      return {
+        queuedJobs: latestSnapshots.length,
+      };
+    },
+
+    resetRunningEmbeddingJobs(): number {
+      const result = db.prepare(`
+        UPDATE embedding_jobs
+        SET
+          status = 'pending',
+          updated_at = ?,
+          claimed_at = NULL,
+          error_message = NULL
+        WHERE status = 'running'
+      `).run(nowIso());
+      return result.changes;
+    },
+
+    claimEmbeddingJobs(limit: number): EmbeddingJobRecord[] {
+      const normalizedLimit = assertPaginationValue(limit, 'limit', limit);
+      if (normalizedLimit === 0) {
+        return [];
+      }
+
+      const claimedAt = nowIso();
+      const transaction = db.transaction(() => {
+        const pending = db.prepare(`
+          SELECT
+            source_id,
+            snapshot_id,
+            status,
+            attempt_count,
+            chunk_count,
+            created_at,
+            updated_at,
+            claimed_at,
+            completed_at,
+            error_message
+          FROM embedding_jobs
+          WHERE status = 'pending'
+          ORDER BY updated_at, source_id, snapshot_id
+          LIMIT ?
+        `).all(normalizedLimit) as Array<{
+          source_id: string;
+          snapshot_id: string;
+          status: EmbeddingJobStatus;
+          attempt_count: number;
+          chunk_count: number;
+          created_at: string;
+          updated_at: string;
+          claimed_at: string | null;
+          completed_at: string | null;
+          error_message: string | null;
+        }>;
+
+        const claim = db.prepare(`
+          UPDATE embedding_jobs
+          SET
+            status = 'running',
+            attempt_count = attempt_count + 1,
+            updated_at = ?,
+            claimed_at = ?,
+            error_message = NULL
+          WHERE source_id = ?
+            AND snapshot_id = ?
+        `);
+
+        for (const job of pending) {
+          claim.run(claimedAt, claimedAt, job.source_id, job.snapshot_id);
+        }
+
+        return pending.map((job) => ({
+          sourceId: job.source_id,
+          snapshotId: job.snapshot_id,
+          status: 'running' as const,
+          attemptCount: job.attempt_count + 1,
+          chunkCount: job.chunk_count,
+          createdAt: job.created_at,
+          updatedAt: claimedAt,
+          claimedAt,
+          completedAt: job.completed_at,
+          errorMessage: null,
+        }));
+      });
+
+      return transaction();
+    },
+
+    markEmbeddingJobSucceeded(input: {
+      sourceId: string;
+      snapshotId: string;
+      modelKey: string;
+      indexedChunkIds: number[];
+      staleChunkIds?: number[];
+    }): void {
+      const timestamp = nowIso();
+      const staleChunkIds = [...new Set(input.staleChunkIds ?? [])];
+      const indexedChunkIds = [...new Set(input.indexedChunkIds)];
+      const indexedPlaceholders = indexedChunkIds.length > 0
+        ? indexedChunkIds.map(() => '?').join(',')
+        : null;
+      const stalePlaceholders = staleChunkIds.length > 0
+        ? staleChunkIds.map(() => '?').join(',')
+        : null;
+
+      const transaction = db.transaction(() => {
+        if (indexedPlaceholders) {
+          db.prepare(`
+            UPDATE embedding_state
+            SET
+              status = 'indexed',
+              model_key = ?,
+              vector_point_id = CAST(chunk_id AS TEXT),
+              last_attempted_at = ?,
+              indexed_at = ?,
+              error_message = NULL
+            WHERE chunk_id IN (${indexedPlaceholders})
+          `).run(input.modelKey, timestamp, timestamp, ...indexedChunkIds);
+        }
+
+        db.prepare(`
+          UPDATE embedding_state
+          SET
+            status = 'failed',
+            model_key = NULL,
+            vector_point_id = NULL,
+            last_attempted_at = ?,
+            indexed_at = NULL,
+            error_message = 'Chunk was not indexed during the latest embedding run'
+          WHERE source_id = ?
+            AND snapshot_id = ?
+            AND status != 'indexed'
+        `).run(timestamp, input.sourceId, input.snapshotId);
+
+        if (stalePlaceholders) {
+          db.prepare(`
+            DELETE FROM embedding_state
+            WHERE chunk_id IN (${stalePlaceholders})
+          `).run(...staleChunkIds);
+        }
+
+        db.prepare(`
+          UPDATE embedding_jobs
+          SET
+            status = 'succeeded',
+            updated_at = ?,
+            completed_at = ?,
+            claimed_at = NULL,
+            error_message = NULL
+          WHERE source_id = ?
+            AND snapshot_id = ?
+        `).run(timestamp, timestamp, input.sourceId, input.snapshotId);
+      });
+
+      transaction();
+    },
+
+    markEmbeddingJobFailed(input: {
+      sourceId: string;
+      snapshotId: string;
+      errorMessage: string;
+    }): void {
+      const timestamp = nowIso();
+      const transaction = db.transaction(() => {
+        db.prepare(`
+          UPDATE embedding_state
+          SET
+            status = 'failed',
+            model_key = NULL,
+            vector_point_id = NULL,
+            last_attempted_at = ?,
+            indexed_at = NULL,
+            error_message = ?
+          WHERE source_id = ?
+            AND snapshot_id = ?
+            AND status != 'indexed'
+        `).run(timestamp, input.errorMessage, input.sourceId, input.snapshotId);
+
+        db.prepare(`
+          UPDATE embedding_jobs
+          SET
+            status = 'failed',
+            updated_at = ?,
+            completed_at = ?,
+            claimed_at = NULL,
+            error_message = ?
+          WHERE source_id = ?
+            AND snapshot_id = ?
+        `).run(timestamp, timestamp, input.errorMessage, input.sourceId, input.snapshotId);
+      });
+
+      transaction();
+    },
+
+    clearEmbeddings(sourceIds?: string[]): { clearedSources: string[] } {
+      const latestSnapshots = listLatestSnapshots(sourceIds);
+      const clearedSources = latestSnapshots.map((snapshot) => snapshot.sourceId);
+      const filterSourceIds = sourceIds && sourceIds.length > 0 ? [...new Set(sourceIds)] : null;
+
+      const transaction = db.transaction(() => {
+        if (filterSourceIds && filterSourceIds.length > 0) {
+          db.prepare(`
+            DELETE FROM embedding_jobs
+            WHERE source_id IN (${filterSourceIds.map(() => '?').join(',')})
+          `).run(...filterSourceIds);
+
+          db.prepare(`
+            DELETE FROM embedding_state
+            WHERE source_id IN (${filterSourceIds.map(() => '?').join(',')})
+          `).run(...filterSourceIds);
+        } else {
+          db.prepare('DELETE FROM embedding_jobs').run();
+          db.prepare('DELETE FROM embedding_state').run();
+        }
+      });
+      transaction();
+
+      return {
+        clearedSources,
+      };
+    },
+
+    getEmbeddingOverview(): {
+      queue: {
+        pendingJobs: number;
+        runningJobs: number;
+        failedJobs: number;
+      };
+      sources: Array<{
+        sourceId: string;
+        snapshotId: string | null;
+        totalChunks: number;
+        indexedChunks: number;
+        pendingChunks: number;
+        failedChunks: number;
+        staleChunks: number;
+        coverageRatio: number;
+      }>;
+    } {
+      const queueCounts = db.prepare(`
+        SELECT
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_jobs,
+          SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_jobs,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_jobs
+        FROM embedding_jobs
+      `).get() as {
+        pending_jobs: number | null;
+        running_jobs: number | null;
+        failed_jobs: number | null;
+      };
+
+      const rows = db.prepare(`
+        SELECT
+          s.id AS source_id,
+          s.last_successful_snapshot_id AS snapshot_id,
+          COUNT(c.id) AS total_chunks,
+          SUM(CASE WHEN es.status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunks,
+          SUM(CASE WHEN es.status = 'pending' THEN 1 ELSE 0 END) AS pending_chunks,
+          SUM(CASE WHEN es.status = 'failed' THEN 1 ELSE 0 END) AS failed_chunks,
+          SUM(CASE WHEN es.status = 'stale' THEN 1 ELSE 0 END) AS stale_chunks
+        FROM sources s
+        LEFT JOIN chunks c
+          ON c.snapshot_id = s.last_successful_snapshot_id
+        LEFT JOIN embedding_state es
+          ON es.chunk_id = c.id
+        GROUP BY s.id, s.last_successful_snapshot_id
+        ORDER BY s.id
+      `).all() as EmbeddingOverviewRow[];
+
+      return {
+        queue: {
+          pendingJobs: queueCounts.pending_jobs ?? 0,
+          runningJobs: queueCounts.running_jobs ?? 0,
+          failedJobs: queueCounts.failed_jobs ?? 0,
+        },
+        sources: rows.map((row) => ({
+          sourceId: row.source_id,
+          snapshotId: row.snapshot_id,
+          totalChunks: row.total_chunks,
+          indexedChunks: row.indexed_chunks,
+          pendingChunks: row.pending_chunks,
+          failedChunks: row.failed_chunks,
+          staleChunks: row.stale_chunks,
+          coverageRatio: row.total_chunks === 0 ? 0 : row.indexed_chunks / row.total_chunks,
+        })),
       };
     },
 

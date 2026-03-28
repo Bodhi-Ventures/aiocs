@@ -56,6 +56,10 @@ All of these support the root-level `--json` flag:
 - `project unlink`
 - `backup export`
 - `backup import`
+- `embeddings status`
+- `embeddings backfill`
+- `embeddings clear`
+- `embeddings run`
 - `search`
 - `verify coverage`
 - `show`
@@ -98,8 +102,8 @@ This section documents the stable top-level `data` payload per command.
 {
   "summary": {
     "status": "healthy",
-    "checkCount": 7,
-    "passCount": 7,
+    "checkCount": 10,
+    "passCount": 10,
     "warnCount": 0,
     "failCount": 0
   },
@@ -122,6 +126,9 @@ Check ids are currently:
 - `source-spec-dirs`
 - `freshness`
 - `daemon-heartbeat`
+- `embedding-provider`
+- `vector-store`
+- `embeddings`
 - `docker`
 
 Summary status values:
@@ -272,6 +279,8 @@ Summary status values:
   "limit": 20,
   "offset": 0,
   "hasMore": true,
+  "modeRequested": "auto",
+  "modeUsed": "hybrid",
   "results": [
     {
       "chunkId": 42,
@@ -280,13 +289,74 @@ Summary status values:
       "pageUrl": "https://example.dev/docs/maker-flow",
       "pageTitle": "Maker flow",
       "sectionTitle": "Order lifecycle",
-      "markdown": "# Order lifecycle\n..."
+      "markdown": "# Order lifecycle\n...",
+      "score": 0.036,
+      "signals": ["lexical", "vector"]
     }
   ]
 }
 ```
 
 `limit` defaults to `20`. `offset` defaults to `0`.
+
+`modeRequested` is the requested search mode (`auto`, `lexical`, `hybrid`, `semantic`).
+`modeUsed` is the actual executed mode after fallbacks. In `auto`, `aiocs` can degrade back to lexical if the vector layer is unavailable or incomplete for the requested scope.
+
+### `embeddings.status`
+
+```json
+{
+  "queue": {
+    "pendingJobs": 0,
+    "runningJobs": 0,
+    "failedJobs": 0
+  },
+  "sources": [
+    {
+      "sourceId": "hyperliquid",
+      "snapshotId": "snp_...",
+      "totalChunks": 420,
+      "indexedChunks": 420,
+      "pendingChunks": 0,
+      "failedChunks": 0,
+      "staleChunks": 0,
+      "coverageRatio": 1
+    }
+  ]
+}
+```
+
+### `embeddings.backfill`
+
+```json
+{
+  "queuedJobs": 5
+}
+```
+
+### `embeddings.clear`
+
+```json
+{
+  "clearedSources": ["hyperliquid", "lighter"]
+}
+```
+
+### `embeddings.run`
+
+```json
+{
+  "processedJobs": 2,
+  "succeededJobs": [
+    {
+      "sourceId": "hyperliquid",
+      "snapshotId": "snp_...",
+      "chunkCount": 420
+    }
+  ],
+  "failedJobs": []
+}
+```
 
 ### `verify.coverage`
 
@@ -392,7 +462,7 @@ Example:
 ```json
 {"type":"daemon.started","intervalMinutes":60,"fetchOnStart":true,"sourceSpecDirs":["/app/sources"]}
 {"type":"daemon.cycle.started","reason":"startup","startedAt":"2026-03-26T00:00:00.000Z"}
-{"type":"daemon.cycle.completed","reason":"startup","result":{"startedAt":"2026-03-26T00:00:00.000Z","finishedAt":"2026-03-26T00:00:10.000Z","dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"removedSourceIds":[],"sources":[]},"refreshed":[],"failed":[]}}
+{"type":"daemon.cycle.completed","reason":"startup","result":{"startedAt":"2026-03-26T00:00:00.000Z","finishedAt":"2026-03-26T00:00:10.000Z","dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"removedSourceIds":[],"sources":[]},"refreshed":[],"failed":[],"embedded":[],"embeddingFailed":[]}}
 {"type":"daemon.stopped"}
 ```
 
@@ -408,6 +478,10 @@ Current stable CLI error codes include:
 - `CHUNK_NOT_FOUND`
 - `REFERENCE_FILE_NOT_FOUND`
 - `INVALID_REFERENCE_FILE`
+- `EMBEDDING_CONFIG_INVALID`
+- `EMBEDDING_PROVIDER_UNAVAILABLE`
+- `VECTOR_STORE_UNAVAILABLE`
+- `EMBEDDING_JOB_NOT_FOUND`
 - `INTERNAL_ERROR`
 
 ## MCP relationship
@@ -440,6 +514,10 @@ Failed MCP tool results:
 
 The MCP `search` tool supports the same `limit` and `offset` fields as the CLI. The MCP server also exposes:
 
+- `embeddings_status`
+- `embeddings_backfill`
+- `embeddings_clear`
+- `embeddings_run`
 - `verify_coverage`
 - `batch`
 

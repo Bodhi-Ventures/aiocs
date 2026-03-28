@@ -8,8 +8,12 @@ import { resolveProjectScope } from './catalog/project-scope.js';
 import { bootstrapSourceSpecs } from './daemon.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
 import { fetchSource, runSourceCanary } from './fetch/fetch-source.js';
+import { AiocsVectorStore } from './hybrid/qdrant.js';
+import { searchHybridCatalog } from './hybrid/search.js';
+import { processEmbeddingJobs } from './hybrid/worker.js';
 import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
+import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 
 export type SearchOptions = {
@@ -19,6 +23,7 @@ export type SearchOptions = {
   project?: string;
   limit?: number;
   offset?: number;
+  mode?: SearchMode;
 };
 
 type CatalogContext = {
@@ -101,6 +106,11 @@ export async function fetchSources(sourceIdOrAll: string): Promise<{
         reused: result.reused,
       });
     }
+
+    await processEmbeddingJobs({
+      catalog,
+      config: getHybridRuntimeConfig(),
+    });
     return fetched;
   });
 
@@ -128,6 +138,11 @@ export async function refreshDueSources(): Promise<{
         reused: result.reused,
       });
     }
+
+    await processEmbeddingJobs({
+      catalog,
+      config: getHybridRuntimeConfig(),
+    });
 
     return fetched;
   });
@@ -258,6 +273,8 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
   limit: number;
   offset: number;
   hasMore: boolean;
+  modeRequested: SearchMode;
+  modeUsed: 'lexical' | 'hybrid' | 'semantic';
   results: Array<{
     chunkId: number;
     sourceId: string;
@@ -266,11 +283,14 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
     pageTitle: string;
     sectionTitle: string;
     markdown: string;
+    score: number;
+    signals: Array<'lexical' | 'vector'>;
   }>;
 }> {
   const cwd = options.project ? resolve(options.project) : process.cwd();
   const explicitSources = options.source.length > 0;
   const results = await withCatalog(({ catalog }) => {
+    const hybridConfig = getHybridRuntimeConfig();
     const scope = resolveProjectScope(cwd, catalog.listProjectLinks());
 
     if (!explicitSources && !options.all && !scope) {
@@ -280,14 +300,19 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
       );
     }
 
-    return catalog.search({
+    return searchHybridCatalog({
+      catalog,
+      config: hybridConfig,
       query,
-      cwd,
-      ...(explicitSources ? { sourceIds: options.source } : {}),
-      ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
-      ...(options.all ? { all: true } : {}),
-      ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
-      ...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
+      mode: options.mode ?? hybridConfig.defaultSearchMode,
+      searchInput: {
+        cwd,
+        ...(explicitSources ? { sourceIds: options.source } : {}),
+        ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
+        ...(options.all ? { all: true } : {}),
+        ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
+      },
     });
   });
 
@@ -297,6 +322,8 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
     limit: results.limit,
     offset: results.offset,
     hasMore: results.hasMore,
+    modeRequested: results.modeRequested,
+    modeUsed: results.modeUsed,
     results: results.results,
   };
 }
@@ -383,6 +410,10 @@ export async function initBuiltInSources(options?: {
           reused: result.reused,
         });
       }
+      await processEmbeddingJobs({
+        catalog,
+        config: getHybridRuntimeConfig(),
+      });
     }
 
     return {
@@ -442,10 +473,90 @@ export async function importCatalogBackup(input: {
     }>;
   };
 }> {
-  return importBackup({
+  const result = await importBackup({
     inputDir: input.inputDir,
     dataDir: getAiocsDataDir(),
     configDir: getAiocsConfigDir(),
     ...(typeof input.replaceExisting === 'boolean' ? { replaceExisting: input.replaceExisting } : {}),
   });
+
+  try {
+    await new AiocsVectorStore(getHybridRuntimeConfig()).clearCollection();
+  } catch {
+    // Vector state is derived and may be rebuilt after import even if the local Qdrant service is offline.
+  }
+
+  await withCatalog(({ catalog }) => {
+    catalog.resetEmbeddingsAfterImport();
+  });
+
+  return result;
+}
+
+export async function getEmbeddingStatus(): Promise<{
+  queue: {
+    pendingJobs: number;
+    runningJobs: number;
+    failedJobs: number;
+  };
+  sources: Array<{
+    sourceId: string;
+    snapshotId: string | null;
+    totalChunks: number;
+    indexedChunks: number;
+    pendingChunks: number;
+    failedChunks: number;
+    staleChunks: number;
+    coverageRatio: number;
+  }>;
+}> {
+  return withCatalog(({ catalog }) => catalog.getEmbeddingOverview());
+}
+
+export async function backfillEmbeddings(sourceIdOrAll: string): Promise<{
+  queuedJobs: number;
+}> {
+  return withCatalog(({ catalog }) =>
+    sourceIdOrAll === 'all'
+      ? catalog.requeueLatestEmbeddingJobs()
+      : catalog.requeueLatestEmbeddingJobs([sourceIdOrAll]));
+}
+
+export async function clearEmbeddings(sourceIdOrAll: string): Promise<{
+  clearedSources: string[];
+}> {
+  return withCatalog(async ({ catalog }) => {
+    const hybridConfig = getHybridRuntimeConfig();
+    const vectorStore = new AiocsVectorStore(hybridConfig);
+    if (sourceIdOrAll === 'all') {
+      await vectorStore.clearCollection();
+      return catalog.clearEmbeddings();
+    }
+
+    const chunkIds = catalog.listEmbeddingChunkIds([sourceIdOrAll]);
+    if (chunkIds.length > 0) {
+      await vectorStore.deleteChunkIds(chunkIds);
+    }
+    return catalog.clearEmbeddings([sourceIdOrAll]);
+  });
+}
+
+export async function runEmbeddingWorker(): Promise<{
+  processedJobs: number;
+  succeededJobs: Array<{
+    sourceId: string;
+    snapshotId: string;
+    chunkCount: number;
+  }>;
+  failedJobs: Array<{
+    sourceId: string;
+    snapshotId: string;
+    errorMessage: string;
+  }>;
+}> {
+  return withCatalog(({ catalog }) =>
+    processEmbeddingJobs({
+      catalog,
+      config: getHybridRuntimeConfig(),
+    }));
 }

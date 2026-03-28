@@ -58,10 +58,18 @@ describe('release assets', () => {
   it('ships CI and release workflows aligned with validation and npm publishing', () => {
     const ciWorkflowPath = join(repoRoot, '.github', 'workflows', 'ci.yml');
     const releaseWorkflowPath = join(repoRoot, '.github', 'workflows', 'release.yml');
+    const composePath = join(repoRoot, 'docker-compose.yml');
 
     expect(existsSync(ciWorkflowPath)).toBe(true);
     expect(readFileSync(ciWorkflowPath, 'utf8')).toContain('npm pack --dry-run');
     expect(readFileSync(ciWorkflowPath, 'utf8')).toContain('docker build');
+    expect(readFileSync(ciWorkflowPath, 'utf8')).toContain('docker compose config');
+
+    expect(existsSync(composePath)).toBe(true);
+    const compose = readFileSync(composePath, 'utf8');
+    expect(compose).toContain('aiocs-qdrant');
+    expect(compose).toContain('host.docker.internal:11434');
+    expect(compose).toContain('host-gateway');
 
     expect(existsSync(releaseWorkflowPath)).toBe(true);
     const workflow = readFileSync(releaseWorkflowPath, 'utf8');

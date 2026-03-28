@@ -11,6 +11,7 @@ Local-only documentation fetch, versioning, and search CLI for AI agents.
 - stores immutable local snapshots in a shared catalog
 - diffs snapshots to show what changed between fetches
 - indexes heading-aware chunks in SQLite FTS5
+- adds optional hybrid retrieval with local Ollama embeddings and a dedicated Qdrant vector index
 - links docs sources to local projects for scoped search
 - exports and imports manifest-backed backups for `~/.aiocs`
 
@@ -145,16 +146,33 @@ Search and inspect results:
 
 ```bash
 pnpm dev -- search "maker flow" --source hyperliquid
+pnpm dev -- search "maker flow" --source hyperliquid --mode lexical
+pnpm dev -- search "maker flow" --source hyperliquid --mode hybrid
+pnpm dev -- search "maker flow" --source hyperliquid --mode semantic
 pnpm dev -- search "maker flow" --all
 pnpm dev -- search "maker flow" --source hyperliquid --limit 5 --offset 0
 pnpm dev -- show 42
 pnpm dev -- canary hyperliquid
 pnpm dev -- diff hyperliquid
+pnpm dev -- embeddings status
+pnpm dev -- embeddings backfill all
+pnpm dev -- embeddings run
 pnpm dev -- backup export /absolute/path/to/backup
 pnpm dev -- verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
+
+### Hybrid search
+
+`aiocs` keeps SQLite FTS5/BM25 as the canonical lexical index and adds an optional hybrid layer:
+
+- `--mode lexical`: lexical search only
+- `--mode hybrid`: BM25 plus vector recall fused with reciprocal-rank fusion
+- `--mode semantic`: vector-only recall over the latest indexed snapshots
+- `--mode auto`: default; uses hybrid only when the vector layer is healthy and current for the requested scope
+
+Vector state is derived from the catalog, not a second source of truth. If Ollama or Qdrant is unavailable, `auto` degrades back to lexical search.
 
 ### Authenticated sources
 
@@ -198,6 +216,8 @@ If `canary` is omitted, `aiocs` defaults to a lightweight canary against the fir
 
 `backup export` creates a manifest-backed directory snapshot. The catalog database is exported with SQLite's native backup mechanism so the backup stays consistent even if `aiocs` is reading or writing the catalog while the export runs.
 
+Backups intentionally include only the canonical `~/.aiocs` data/config state. The Qdrant vector index is treated as derived state and is rebuilt from the restored catalog after `backup import`.
+
 ## JSON command reference
 
 All one-shot commands support `--json`:
@@ -216,6 +236,10 @@ All one-shot commands support `--json`:
 - `project unlink`
 - `backup export`
 - `backup import`
+- `embeddings status`
+- `embeddings backfill`
+- `embeddings clear`
+- `embeddings run`
 - `search`
 - `verify coverage`
 - `show`
@@ -230,6 +254,10 @@ pnpm dev -- --json fetch hyperliquid
 pnpm dev -- --json canary hyperliquid
 pnpm dev -- --json refresh due
 pnpm dev -- --json diff hyperliquid
+pnpm dev -- --json embeddings status
+pnpm dev -- --json embeddings backfill all
+pnpm dev -- --json embeddings clear hyperliquid
+pnpm dev -- --json embeddings run
 pnpm dev -- --json project link /absolute/path/to/project hyperliquid lighter
 pnpm dev -- --json snapshot list hyperliquid
 pnpm dev -- --json backup export /absolute/path/to/backup
@@ -248,6 +276,8 @@ For multi-result commands like `fetch`, `refresh due`, and `search`, `data` cont
     "limit": 20,
     "offset": 0,
     "hasMore": true,
+    "modeRequested": "auto",
+    "modeUsed": "hybrid",
     "results": []
   }
 }
@@ -270,6 +300,7 @@ Configured source spec directories are treated as the daemon’s source of truth
 - if `AIOCS_SOURCE_SPEC_DIRS` is explicitly set but resolves to missing or empty directories, the daemon fails fast instead of silently idling
 - due canaries run independently from full fetch schedules so drift is caught earlier than the next full snapshot refresh
 - daemon heartbeat state is persisted in the local catalog and surfaced through `docs doctor`
+- queued embedding jobs are processed in the same daemon cycle after fetches complete
 
 Environment variables:
 
@@ -297,7 +328,7 @@ Example event stream:
 ```json
 {"type":"daemon.started","intervalMinutes":60,"fetchOnStart":true,"sourceSpecDirs":["/app/sources"]}
 {"type":"daemon.cycle.started","reason":"startup","startedAt":"2026-03-26T00:00:00.000Z"}
-{"type":"daemon.cycle.completed","reason":"startup","result":{"canaryDueSourceIds":[],"dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"sources":[]},"canaried":[],"canaryFailed":[],"refreshed":[],"failed":[]}}
+{"type":"daemon.cycle.completed","reason":"startup","result":{"canaryDueSourceIds":[],"dueSourceIds":[],"bootstrapped":{"processedSpecCount":5,"sources":[]},"canaried":[],"canaryFailed":[],"refreshed":[],"failed":[],"embedded":[],"embeddingFailed":[]}}
 ```
 
 ## MCP server
@@ -323,6 +354,10 @@ The MCP server exposes the same shared operations as the CLI without shell parsi
 - `diff_snapshots`
 - `project_link`
 - `project_unlink`
+- `embeddings_status`
+- `embeddings_backfill`
+- `embeddings_clear`
+- `embeddings_run`
 - `backup_export`
 - `backup_import`
 - `search`
@@ -384,6 +419,8 @@ The compose file:
 - runs `docs daemon` as the container entrypoint
 - bind-mounts `${HOME}/.aiocs` into `/root/.aiocs` so the container shares the same local catalog defaults as the host CLI
 - bind-mounts `./sources` into `/app/sources` so source spec edits are picked up without rebuilding
+- runs a dedicated `aiocs-qdrant` container for vector search
+- points the daemon at host Ollama with `AIOCS_OLLAMA_BASE_URL` (defaults to `http://host.docker.internal:11434` in Compose)
 
 Override cadence with environment variables when starting compose:
 

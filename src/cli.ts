@@ -14,12 +14,16 @@ import {
 import { startDaemon, parseDaemonConfig, type DaemonEvent } from './daemon.js';
 import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
 import { packageName, packageVersion } from './runtime/package-metadata.js';
+import { type SearchMode } from './runtime/hybrid-config.js';
 import {
   AiocsError,
   AIOCS_ERROR_CODES,
 } from './errors.js';
 import {
+  backfillEmbeddings,
+  clearEmbeddings,
   diffSnapshotsForSource,
+  getEmbeddingStatus,
   exportCatalogBackup,
   importCatalogBackup,
   fetchSources,
@@ -29,6 +33,7 @@ import {
   listSnapshotsForSource,
   listSources,
   runSourceCanaries,
+  runEmbeddingWorker,
   searchCatalog,
   showChunk,
   type SearchOptions,
@@ -51,11 +56,15 @@ function renderSearchResult(result: {
   pageTitle: string;
   sectionTitle: string;
   markdown: string;
+  score?: number;
+  signals?: Array<'lexical' | 'vector'>;
 }): string {
   return [
     `Chunk ID: ${result.chunkId}`,
     `Source: ${result.sourceId}`,
     `Snapshot: ${result.snapshotId}`,
+    ...(typeof result.score === 'number' ? [`Score: ${result.score.toFixed(4)}`] : []),
+    ...(result.signals ? [`Signals: ${result.signals.join(', ')}`] : []),
     `Page: ${result.pageTitle}`,
     `Section: ${result.sectionTitle}`,
     `URL: ${result.pageUrl}`,
@@ -89,6 +98,21 @@ function parsePositiveIntegerOption(
   }
 
   return parsed;
+}
+
+function parseSearchModeOption(value: string | undefined): SearchMode | undefined {
+  if (typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (value === 'auto' || value === 'lexical' || value === 'hybrid' || value === 'semantic') {
+    return value;
+  }
+
+  throw new AiocsError(
+    AIOCS_ERROR_CODES.invalidArgument,
+    'mode must be one of: auto, lexical, hybrid, semantic',
+  );
 }
 
 async function executeCommand<TData>(
@@ -150,6 +174,8 @@ function createDaemonLogger(json: boolean): { emit(event: DaemonEvent): void } {
             `due=${event.result.dueSourceIds.length}`,
             `refreshed=${event.result.refreshed.length}`,
             `failed=${event.result.failed.length}`,
+            `embedded=${event.result.embedded.length}`,
+            `embeddingFailed=${event.result.embeddingFailed.length}`,
           ].join(' | '));
           for (const canaried of event.result.canaried) {
             console.log([
@@ -172,6 +198,12 @@ function createDaemonLogger(json: boolean): { emit(event: DaemonEvent): void } {
           }
           for (const failed of event.result.failed) {
             console.log(`Failed | ${failed.sourceId} | ${failed.errorMessage}`);
+          }
+          for (const embedded of event.result.embedded) {
+            console.log(`Embedded | ${embedded.sourceId} | ${embedded.snapshotId} | chunks=${embedded.chunkCount}`);
+          }
+          for (const failedEmbedding of event.result.embeddingFailed) {
+            console.log(`Embedding failed | ${failedEmbedding.sourceId} | ${failedEmbedding.snapshotId} | ${failedEmbedding.errorMessage}`);
           }
           break;
       }
@@ -509,6 +541,80 @@ backup
     },
   );
 
+const embeddings = program.command('embeddings');
+embeddings
+  .command('status')
+  .description('Show embedding backlog and coverage for latest snapshots.')
+  .action(async (_options: unknown, command: Command) => {
+    await executeCommand(command, 'embeddings.status', async () => {
+      const result = await getEmbeddingStatus();
+      return {
+        data: result,
+        human: [
+          `Queue | pending=${result.queue.pendingJobs} running=${result.queue.runningJobs} failed=${result.queue.failedJobs}`,
+          ...result.sources.map((source) => [
+            source.sourceId,
+            source.snapshotId ?? '(none)',
+            `coverage=${Math.round(source.coverageRatio * 100)}%`,
+            `indexed=${source.indexedChunks}/${source.totalChunks}`,
+            `pending=${source.pendingChunks}`,
+            `failed=${source.failedChunks}`,
+            `stale=${source.staleChunks}`,
+          ].join(' | ')),
+        ],
+      };
+    });
+  });
+
+embeddings
+  .command('backfill')
+  .argument('<source-id-or-all>')
+  .description('Queue latest snapshots for embedding rebuild.')
+  .action(async (sourceIdOrAll: string, _options: Record<string, never>, command: Command) => {
+    await executeCommand(command, 'embeddings.backfill', async () => {
+      const result = await backfillEmbeddings(sourceIdOrAll);
+      return {
+        data: result,
+        human: `Queued ${result.queuedJobs} embedding job(s)`,
+      };
+    });
+  });
+
+embeddings
+  .command('clear')
+  .argument('<source-id-or-all>')
+  .description('Clear derived embedding state for latest snapshots.')
+  .action(async (sourceIdOrAll: string, _options: Record<string, never>, command: Command) => {
+    await executeCommand(command, 'embeddings.clear', async () => {
+      const result = await clearEmbeddings(sourceIdOrAll);
+      return {
+        data: result,
+        human: result.clearedSources.length === 0
+          ? 'No embedding state cleared.'
+          : `Cleared embedding state for ${result.clearedSources.join(', ')}`,
+      };
+    });
+  });
+
+embeddings
+  .command('run')
+  .description('Process queued embedding jobs immediately.')
+  .action(async (_options: unknown, command: Command) => {
+    await executeCommand(command, 'embeddings.run', async () => {
+      const result = await runEmbeddingWorker();
+      return {
+        data: result,
+        human: [
+          `Processed ${result.processedJobs} embedding job(s)`,
+          ...result.succeededJobs.map((job) =>
+            `Embedded ${job.sourceId} -> ${job.snapshotId} (${job.chunkCount} chunks)`),
+          ...result.failedJobs.map((job) =>
+            `Embedding failed ${job.sourceId} -> ${job.snapshotId}: ${job.errorMessage}`),
+        ],
+      };
+    });
+  });
+
 program
   .command('search')
   .argument('<query>')
@@ -519,21 +625,24 @@ program
   .option('--snapshot <snapshot-id>', 'search a specific snapshot')
   .option('--all', 'search across all latest snapshots')
   .option('--project <path>', 'resolve search scope as if running from this path')
+  .option('--mode <mode>', 'search mode: auto, lexical, hybrid, semantic')
   .option('--limit <count>', 'maximum number of results to return')
   .option('--offset <count>', 'number of results to skip before returning matches')
   .action(async (
     query: string,
-    options: SearchOptions & { limit?: string; offset?: string },
+    options: SearchOptions & { limit?: string; offset?: string; mode?: string },
     command: Command,
   ) => {
     await executeCommand(command, 'search', async () => {
       const limit = parsePositiveIntegerOption(options.limit, 'limit');
       const offset = parsePositiveIntegerOption(options.offset, 'offset');
+      const mode = parseSearchModeOption(options.mode);
       const result = await searchCatalog(query, {
         source: options.source,
         ...(options.snapshot ? { snapshot: options.snapshot } : {}),
         ...(typeof options.all !== 'undefined' ? { all: options.all } : {}),
         ...(options.project ? { project: options.project } : {}),
+        ...(mode ? { mode } : {}),
         ...(typeof limit === 'number' ? { limit } : {}),
         ...(typeof offset === 'number' ? { offset } : {}),
       });
@@ -542,9 +651,9 @@ program
       return {
         data: result,
         human: results.length === 0
-          ? `No results for "${query}"`
+          ? `No results for "${query}" (mode=${result.modeUsed})`
           : [
-            `Showing ${result.offset + 1}-${result.offset + results.length} of ${result.total} result(s) for "${query}"`,
+            `Showing ${result.offset + 1}-${result.offset + results.length} of ${result.total} result(s) for "${query}" | mode=${result.modeUsed}`,
             ...results.map((entry) => renderSearchResult(entry)),
           ],
       };

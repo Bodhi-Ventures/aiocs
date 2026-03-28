@@ -7,6 +7,7 @@ Use this skill when you need local documentation search, inspection, refresh, or
 - You need authoritative local docs for an exchange, SDK, or product without browsing the live site every time.
 - You want machine-readable search/show results for an AI agent.
 - You need to detect source drift or compare snapshot changes over time.
+- You want hybrid docs retrieval with lexical plus semantic/vector recall.
 - You need to bootstrap or validate `aiocs` on a new machine.
 - You want to keep the local docs catalog warm through the `aiocs` daemon or MCP server.
 - You need to back up or restore the shared catalog.
@@ -45,6 +46,7 @@ Search the shared catalog:
 docs --json search "maker flow" --source hyperliquid
 docs --json search "maker flow" --all
 docs --json search "maker flow" --source hyperliquid --limit 5 --offset 0
+docs --json search "maker flow" --source hyperliquid --mode hybrid
 ```
 
 Inspect a specific chunk:
@@ -60,6 +62,9 @@ docs --json refresh due
 docs --json fetch hyperliquid
 docs --json fetch all
 docs --json canary hyperliquid
+docs --json embeddings status
+docs --json embeddings backfill all
+docs --json embeddings run
 ```
 
 Inspect what changed between snapshots:
@@ -104,6 +109,10 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `diff_snapshots`
 - `project_link`
 - `project_unlink`
+- `embeddings_status`
+- `embeddings_backfill`
+- `embeddings_clear`
+- `embeddings_run`
 - `backup_export`
 - `backup_import`
 - `search`
@@ -116,6 +125,8 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - The catalog is local-only and shared across projects on the same machine.
 - Default state root: `~/.aiocs/data` and `~/.aiocs/config`.
 - Use `docs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
+- `docs search --mode auto` is the right default for agents; it uses hybrid retrieval only when embeddings are current and healthy for the requested scope.
+- The Docker Compose stack includes a dedicated `aiocs-qdrant` container and expects Ollama to be reachable separately.
 - Canaries are the first place to look when a docs site changed and fetches started degrading.
 - CLI failures expose machine-readable `error.code` fields in `--json` mode.
 - MCP tool results use `{ ok, data?, error? }` envelopes, and `batch` can reduce multiple small MCP round trips.

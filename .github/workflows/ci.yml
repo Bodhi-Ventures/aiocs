@@ -65,5 +65,8 @@ jobs:
       - name: Build image
         run: docker build --tag aiocs-ci .
 
+      - name: Validate compose stack
+        run: docker compose config
+
       - name: Smoke test image
         run: docker run --rm aiocs-ci --version

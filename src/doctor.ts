@@ -4,8 +4,11 @@ import { promisify } from 'node:util';
 
 import { openCatalog } from './catalog/catalog.js';
 import { parseDaemonConfig } from './daemon.js';
+import { getEmbeddingProviderStatus } from './hybrid/ollama.js';
+import { AiocsVectorStore } from './hybrid/qdrant.js';
 import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
+import { getHybridRuntimeConfig } from './runtime/hybrid-config.js';
 import { pathExists, walkSourceSpecFiles } from './spec/source-spec-files.js';
 
 const execFileAsync = promisify(execFile);
@@ -21,6 +24,9 @@ export type DoctorCheck = {
     | 'source-spec-dirs'
     | 'freshness'
     | 'daemon-heartbeat'
+    | 'embedding-provider'
+    | 'vector-store'
+    | 'embeddings'
     | 'docker';
   status: DoctorCheckStatus;
   summary: string;
@@ -244,6 +250,9 @@ async function checkFreshness(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
         sourceId: source.id,
         nextDueAt: source.nextDueAt,
         lastSuccessfulSnapshotAt: source.lastSuccessfulSnapshotAt,
+        lastSuccessfulSnapshotAgeMinutes: source.lastSuccessfulSnapshotAt
+          ? Math.floor((referenceTime - Date.parse(source.lastSuccessfulSnapshotAt)) / 60_000)
+          : null,
       }));
 
     const staleCanaries = sources
@@ -271,6 +280,7 @@ async function checkFreshness(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
         sourceCount: sources.length,
         staleSources,
         staleCanaries,
+        checkedAt: new Date(referenceTime).toISOString(),
       },
     };
   } catch (error) {
@@ -336,6 +346,100 @@ async function checkDaemonHeartbeat(env: NodeJS.ProcessEnv): Promise<DoctorCheck
   }
 }
 
+async function checkEmbeddingProvider(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+  try {
+    const config = getHybridRuntimeConfig(env);
+    const status = await getEmbeddingProviderStatus(config);
+    return {
+      id: 'embedding-provider',
+      status: status.ok ? 'pass' : 'warn',
+      summary: status.ok
+        ? `Embedding provider is ready with model ${status.model}.`
+        : `Embedding provider is reachable but model ${status.model} is not available locally.`,
+      details: status,
+    };
+  } catch (error) {
+    return {
+      id: 'embedding-provider',
+      status: 'fail',
+      summary: `Embedding provider check failed: ${toErrorMessage(error)}`,
+    };
+  }
+}
+
+async function checkVectorStore(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+  try {
+    const config = getHybridRuntimeConfig(env);
+    const status = await new AiocsVectorStore(config).getHealth();
+    return {
+      id: 'vector-store',
+      status: status.ok ? 'pass' : 'warn',
+      summary: status.ok
+        ? `Qdrant is reachable at ${config.qdrantUrl}.`
+        : `Qdrant is not ready at ${config.qdrantUrl}: ${status.errorMessage ?? 'unknown error'}`,
+      details: {
+        qdrantUrl: config.qdrantUrl,
+        collection: config.qdrantCollection,
+        ...(status.collections ? { collections: status.collections } : {}),
+      },
+    };
+  } catch (error) {
+    return {
+      id: 'vector-store',
+      status: 'fail',
+      summary: `Vector store check failed: ${toErrorMessage(error)}`,
+    };
+  }
+}
+
+async function checkEmbeddings(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+  const dataDir = getAiocsDataDir(env);
+  let catalog = null;
+
+  try {
+    catalog = openCatalog({ dataDir });
+    const overview = catalog.getEmbeddingOverview();
+    const underIndexedSources = overview.sources
+      .filter((source) => source.totalChunks > 0 && source.indexedChunks < source.totalChunks)
+      .map((source) => ({
+        sourceId: source.sourceId,
+        snapshotId: source.snapshotId,
+        coverageRatio: source.coverageRatio,
+        totalChunks: source.totalChunks,
+        indexedChunks: source.indexedChunks,
+        pendingChunks: source.pendingChunks,
+        failedChunks: source.failedChunks,
+        staleChunks: source.staleChunks,
+      }));
+
+    const status: DoctorCheckStatus = overview.queue.failedJobs > 0
+      ? 'warn'
+      : underIndexedSources.length > 0 || overview.queue.pendingJobs > 0 || overview.queue.runningJobs > 0
+        ? 'warn'
+        : 'pass';
+
+    return {
+      id: 'embeddings',
+      status,
+      summary: status === 'pass'
+        ? 'Embedding coverage is complete for latest snapshots.'
+        : `Embedding backlog detected: ${overview.queue.pendingJobs} pending, ${overview.queue.runningJobs} running, ${overview.queue.failedJobs} failed job(s).`,
+      details: {
+        queue: overview.queue,
+        underIndexedSources,
+      },
+    };
+  } catch (error) {
+    return {
+      id: 'embeddings',
+      status: 'fail',
+      summary: `Embedding status check failed: ${toErrorMessage(error)}`,
+    };
+  } finally {
+    catalog?.close();
+  }
+}
+
 async function checkDocker(): Promise<DoctorCheck> {
   try {
     const { stdout } = await execFileAsync('docker', ['info', '--format', '{{json .ServerVersion}}']);
@@ -374,6 +478,9 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<D
   const sourceSpecDirsCheck = await checkSourceSpecDirs(daemonConfig);
   const freshnessCheck = await checkFreshness(env);
   const daemonHeartbeatCheck = await checkDaemonHeartbeat(env);
+  const embeddingProviderCheck = await checkEmbeddingProvider(env);
+  const vectorStoreCheck = await checkVectorStore(env);
+  const embeddingsCheck = await checkEmbeddings(env);
   const dockerCheck = await checkDocker();
   const checks = [
     catalogCheck,
@@ -382,6 +489,9 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<D
     sourceSpecDirsCheck,
     freshnessCheck,
     daemonHeartbeatCheck,
+    embeddingProviderCheck,
+    vectorStoreCheck,
+    embeddingsCheck,
     dockerCheck,
   ];
 

@@ -13,6 +13,10 @@ export const AIOCS_ERROR_CODES = {
   backupConflict: 'BACKUP_CONFLICT',
   backupInvalid: 'BACKUP_INVALID',
   backupSourceMissing: 'BACKUP_SOURCE_MISSING',
+  embeddingConfigInvalid: 'EMBEDDING_CONFIG_INVALID',
+  embeddingProviderUnavailable: 'EMBEDDING_PROVIDER_UNAVAILABLE',
+  vectorStoreUnavailable: 'VECTOR_STORE_UNAVAILABLE',
+  embeddingJobNotFound: 'EMBEDDING_JOB_NOT_FOUND',
   internalError: 'INTERNAL_ERROR',
 } as const;
 

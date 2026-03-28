@@ -1,12 +1,30 @@
 services:
+  aiocs-qdrant:
+    image: qdrant/qdrant:v1.15.2
+    restart: unless-stopped
+    volumes:
+      - aiocs-qdrant-storage:/qdrant/storage
+    ports:
+      - ${AIOCS_QDRANT_PORT:-6333}:6333
+
   aiocs-daemon:
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      - aiocs-qdrant
     restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
     environment:
       AIOCS_DAEMON_INTERVAL_MINUTES: ${AIOCS_DAEMON_INTERVAL_MINUTES:-60}
       AIOCS_DAEMON_FETCH_ON_START: ${AIOCS_DAEMON_FETCH_ON_START:-true}
+      AIOCS_QDRANT_URL: ${AIOCS_QDRANT_URL:-http://aiocs-qdrant:6333}
+      AIOCS_OLLAMA_BASE_URL: ${AIOCS_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      AIOCS_OLLAMA_EMBEDDING_MODEL: ${AIOCS_OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
     volumes:
       - ${HOME}/.aiocs:/root/.aiocs
       - ./sources:/app/sources:ro
+
+volumes:
+  aiocs-qdrant-storage:

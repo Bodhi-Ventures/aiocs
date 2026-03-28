@@ -7,9 +7,12 @@ import { z } from 'zod';
 import { AiocsError, AIOCS_ERROR_CODES, toAiocsError } from './errors.js';
 import { packageDescription, packageName, packageVersion } from './runtime/package-metadata.js';
 import {
+  backfillEmbeddings,
+  clearEmbeddings,
   diffSnapshotsForSource,
   exportCatalogBackup,
   fetchSources,
+  getEmbeddingStatus,
   getDoctorReport,
   importCatalogBackup,
   initBuiltInSources,
@@ -18,6 +21,7 @@ import {
   listSources,
   refreshDueSources,
   runSourceCanaries,
+  runEmbeddingWorker,
   searchCatalog,
   showChunk,
   unlinkProjectSources,
@@ -71,6 +75,8 @@ const searchResultSchema = z.object({
   pageTitle: z.string(),
   sectionTitle: z.string(),
   markdown: z.string(),
+  score: z.number().optional(),
+  signals: z.array(z.enum(['lexical', 'vector'])).optional(),
 });
 
 const mcpErrorSchema = z.object({
@@ -166,6 +172,24 @@ const backupManifestSchema = z.object({
   })),
 });
 
+const embeddingStatusSchema = z.object({
+  queue: z.object({
+    pendingJobs: z.number().int().nonnegative(),
+    runningJobs: z.number().int().nonnegative(),
+    failedJobs: z.number().int().nonnegative(),
+  }),
+  sources: z.array(z.object({
+    sourceId: z.string(),
+    snapshotId: z.string().nullable(),
+    totalChunks: z.number().int().nonnegative(),
+    indexedChunks: z.number().int().nonnegative(),
+    pendingChunks: z.number().int().nonnegative(),
+    failedChunks: z.number().int().nonnegative(),
+    staleChunks: z.number().int().nonnegative(),
+    coverageRatio: z.number(),
+  })),
+});
+
 const server = new McpServer({
   name: packageName,
   version: packageVersion,
@@ -247,10 +271,15 @@ const toolHandlers: Record<string, ToolHandler> = {
     ...(typeof args.snapshotId === 'string' ? { snapshot: args.snapshotId } : {}),
     ...(typeof args.all === 'boolean' ? { all: args.all } : {}),
     ...(typeof args.project === 'string' ? { project: args.project } : {}),
+    ...(typeof args.mode === 'string' ? { mode: args.mode as 'auto' | 'lexical' | 'hybrid' | 'semantic' } : {}),
     ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
     ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
   }),
   show: async (args = {}) => showChunk(args.chunkId as number),
+  embeddings_status: async () => getEmbeddingStatus(),
+  embeddings_backfill: async (args = {}) => backfillEmbeddings(args.sourceIdOrAll as string),
+  embeddings_clear: async (args = {}) => clearEmbeddings(args.sourceIdOrAll as string),
+  embeddings_run: async () => runEmbeddingWorker(),
   backup_export: async (args = {}) =>
     exportCatalogBackup({
       outputDir: args.outputDir as string,
@@ -358,7 +387,7 @@ registerAiocsTool(
   'doctor',
   {
     title: 'Doctor',
-    description: 'Validate catalog, Playwright, daemon config, source-spec directories, and Docker readiness.',
+    description: 'Validate catalog, Playwright, daemon config, source-spec directories, freshness, embeddings, Qdrant, Ollama, and Docker readiness.',
     outputSchema: doctorReportSchema,
   },
 );
@@ -530,6 +559,7 @@ registerAiocsTool(
       snapshotId: z.string().optional(),
       all: z.boolean().optional(),
       project: z.string().optional(),
+      mode: z.enum(['auto', 'lexical', 'hybrid', 'semantic']).optional(),
       limit: z.number().int().positive().optional(),
       offset: z.number().int().nonnegative().optional(),
     }),
@@ -539,6 +569,8 @@ registerAiocsTool(
       limit: z.number().int().positive(),
       offset: z.number().int().nonnegative(),
       hasMore: z.boolean(),
+      modeRequested: z.enum(['auto', 'lexical', 'hybrid', 'semantic']),
+      modeUsed: z.enum(['lexical', 'hybrid', 'semantic']),
       results: z.array(searchResultSchema),
     }),
   },
@@ -554,6 +586,64 @@ registerAiocsTool(
     }),
     outputSchema: z.object({
       chunk: searchResultSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'embeddings_status',
+  {
+    title: 'Embeddings status',
+    description: 'Return embedding backlog and latest-snapshot coverage details.',
+    outputSchema: embeddingStatusSchema,
+  },
+);
+
+registerAiocsTool(
+  'embeddings_backfill',
+  {
+    title: 'Embeddings backfill',
+    description: 'Queue latest snapshots for embedding rebuild for one source or all sources.',
+    inputSchema: z.object({
+      sourceIdOrAll: z.string(),
+    }),
+    outputSchema: z.object({
+      queuedJobs: z.number().int().nonnegative(),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'embeddings_clear',
+  {
+    title: 'Embeddings clear',
+    description: 'Clear derived embedding state for one source or all sources.',
+    inputSchema: z.object({
+      sourceIdOrAll: z.string(),
+    }),
+    outputSchema: z.object({
+      clearedSources: z.array(z.string()),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'embeddings_run',
+  {
+    title: 'Embeddings run',
+    description: 'Process queued embedding jobs immediately.',
+    outputSchema: z.object({
+      processedJobs: z.number().int().nonnegative(),
+      succeededJobs: z.array(z.object({
+        sourceId: z.string(),
+        snapshotId: z.string(),
+        chunkCount: z.number().int().nonnegative(),
+      })),
+      failedJobs: z.array(z.object({
+        sourceId: z.string(),
+        snapshotId: z.string(),
+        errorMessage: z.string(),
+      })),
     }),
   },
 );
