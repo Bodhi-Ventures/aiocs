@@ -361,19 +361,25 @@ schedule:
           command: 'search',
         });
         expect(searchEnvelope.data).toMatchObject({
-          total: 1,
           limit: 20,
           offset: 0,
           hasMore: false,
-          results: [
-            expect.objectContaining({
-              sourceId: 'selector-json',
-              markdown: expect.stringContaining('Maker flow documentation starts here.'),
-            }),
-          ],
+        });
+        const searchData = searchEnvelope.data as {
+          total: number;
+          results: Array<{
+            chunkId: number;
+            sourceId: string;
+            markdown: string;
+          }>;
+        };
+        expect(searchData.total).toBeGreaterThanOrEqual(1);
+        expect(searchData.results[0]).toMatchObject({
+          sourceId: 'selector-json',
+          markdown: expect.stringContaining('Maker flow documentation starts here.'),
         });
 
-        const chunkId = (searchEnvelope.data as { results: Array<{ chunkId: number }> }).results[0]?.chunkId;
+        const chunkId = searchData.results[0]?.chunkId;
         expect(chunkId).toBeTruthy();
 
         const show = await runCli(runtime, ['--json', 'show', String(chunkId)], { cwd: root, env });

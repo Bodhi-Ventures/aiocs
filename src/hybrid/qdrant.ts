@@ -31,8 +31,8 @@ export class AiocsVectorStore {
     this.collectionName = config.qdrantCollection;
   }
 
-  private pointIdForChunk(chunkId: number): string {
-    return String(chunkId);
+  private pointIdForChunk(chunkId: number): number {
+    return chunkId;
   }
 
   async ensureCollection(dimension: number): Promise<void> {
