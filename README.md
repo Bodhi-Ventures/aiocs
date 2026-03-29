@@ -414,7 +414,7 @@ Successful MCP results use an envelope:
   "ok": true,
   "data": {
     "name": "@bodhi-ventures/aiocs",
-    "version": "0.1.0"
+    "version": "0.1.1"
   }
 }
 ```

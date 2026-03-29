@@ -142,7 +142,7 @@ describe('backup export/import', () => {
       JSON.stringify({
         formatVersion: 1,
         createdAt: new Date().toISOString(),
-        packageVersion: '0.1.0',
+        packageVersion: '0.1.1',
         entries: [],
       }, null, 2),
       'utf8',
@@ -175,7 +175,7 @@ describe('backup export/import', () => {
       JSON.stringify({
         formatVersion: 1,
         createdAt: new Date().toISOString(),
-        packageVersion: '0.1.0',
+        packageVersion: '0.1.1',
         entries: [],
       }, null, 2),
       'utf8',

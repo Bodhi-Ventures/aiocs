@@ -73,7 +73,7 @@ This section documents the stable top-level `data` payload per command.
 ```json
 {
   "name": "@bodhi-ventures/aiocs",
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
 ```
 
@@ -406,7 +406,7 @@ Summary status values:
   "manifest": {
     "formatVersion": 1,
     "createdAt": "2026-03-26T10:00:00.000Z",
-    "packageVersion": "0.1.0",
+    "packageVersion": "0.1.1",
     "entries": [
       {
         "relativePath": "data/catalog.sqlite",
@@ -428,7 +428,7 @@ Summary status values:
   "manifest": {
     "formatVersion": 1,
     "createdAt": "2026-03-26T10:00:00.000Z",
-    "packageVersion": "0.1.0",
+    "packageVersion": "0.1.1",
     "entries": []
   }
 }
@@ -499,7 +499,7 @@ Successful MCP tool results:
   "ok": true,
   "data": {
     "name": "@bodhi-ventures/aiocs",
-    "version": "0.1.0"
+    "version": "0.1.1"
   }
 }
 ```
