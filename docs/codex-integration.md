@@ -9,7 +9,7 @@ Install the CLI and MCP binary globally:
 ```bash
 npm install -g @bodhi-ventures/aiocs
 docs --version
-aiocs-mcp
+command -v aiocs-mcp
 ```
 
 The `aiocs-mcp` process is an MCP stdio server, so running it directly will wait for MCP clients instead of printing interactive help. The useful validation commands are:
@@ -54,7 +54,7 @@ There are two supported subagent patterns:
 - Install-ready global agent definition:
   `ai-skills/agents/aiocs-docs-specialist.toml` from your local `ai-skills` checkout
 
-The repo example is intentionally development-oriented and uses a checkout-local MCP command. The global agent points at the globally installed `aiocs-mcp` binary.
+The repo example and the install-ready global agent both point at the globally installed `aiocs-mcp` binary so Codex uses the published package by default.
 
 To expose the install-ready global agent to Codex on this machine:
 

@@ -30,25 +30,17 @@ For testing or local overrides, set:
 ```bash
 npm install -g @bodhi-ventures/aiocs
 docs --version
+docs --help
+command -v aiocs-mcp
 ```
 
-For repository development:
+For repository development only:
 
 ```bash
 pnpm install
 pnpm build
-```
-
-Run the CLI during development with:
-
-```bash
 pnpm dev -- --help
-```
-
-Or after build:
-
-```bash
-./dist/cli.js --help
+pnpm dev:mcp
 ```
 
 For AI agents, prefer the root-level `--json` flag for one-shot commands:
@@ -321,8 +313,7 @@ For multi-result commands like `fetch`, `refresh due`, and `search`, `data` cont
 `aiocs` ships a first-class long-running refresh process:
 
 ```bash
-pnpm dev -- daemon
-./dist/cli.js daemon
+docs daemon
 ```
 
 The daemon bootstraps source specs from the configured directories, refreshes due sources, sleeps for the configured interval, and repeats.
@@ -353,7 +344,7 @@ For local agents, the daemon keeps the shared catalog under `~/.aiocs` warm whil
 `docs daemon --json` is intentionally different from one-shot commands. Because it is long-running, it emits one JSON event per line:
 
 ```bash
-./dist/cli.js --json daemon
+docs --json daemon
 ```
 
 Example event stream:
@@ -369,7 +360,13 @@ Example event stream:
 `aiocs` also ships an MCP server binary for tool-native agent integrations:
 
 ```bash
+command -v aiocs-mcp
 aiocs-mcp
+```
+
+For repository development only:
+
+```bash
 pnpm dev:mcp
 ```
 

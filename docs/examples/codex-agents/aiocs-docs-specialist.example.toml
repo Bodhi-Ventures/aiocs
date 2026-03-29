@@ -1,5 +1,5 @@
 name = "aiocs_docs_specialist"
-description = "Development example specialist for local aiocs documentation search, drift checks, diffs, and health verification through a checkout-local MCP server."
+description = "Example specialist for local aiocs documentation search, drift checks, diffs, and health verification through the globally installed aiocs MCP server."
 model = "gpt-5.4-mini"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
@@ -17,5 +17,4 @@ If aiocs health is in doubt, run doctor before assuming the catalog is broken.
 """
 
 [mcp_servers.aiocs]
-command = "pnpm"
-args = ["--dir", "/absolute/path/to/aiocs", "dev:mcp"]
+command = "aiocs-mcp"
