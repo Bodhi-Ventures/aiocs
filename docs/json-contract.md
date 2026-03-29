@@ -419,8 +419,8 @@ Summary status values:
 ```json
 {
   "inputDir": "/absolute/path/to/backup",
-  "dataDir": "/Users/example/.aiocs/data",
-  "configDir": "/Users/example/.aiocs/config",
+  "dataDir": "<home>/.aiocs/data",
+  "configDir": "<home>/.aiocs/config",
   "manifest": {
     "formatVersion": 1,
     "createdAt": "2026-03-26T10:00:00.000Z",

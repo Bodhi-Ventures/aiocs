@@ -69,16 +69,16 @@ describe('daemon runtime', () => {
 
   it('parses daemon config defaults', () => {
     const config = parseDaemonConfig({}, {
-      bundledSourceDir: '/repo/aiocs/sources',
-      containerSourceDir: '/app/sources',
-      userSourceDir: '/Users/test/.aiocs/sources',
+      bundledSourceDir: '/repo-root/sources',
+      containerSourceDir: '/container/sources',
+      userSourceDir: '/user-home/.aiocs/sources',
     });
 
     expect(config).toEqual({
       intervalMinutes: 60,
       fetchOnStart: true,
       strictSourceSpecDirs: false,
-      sourceSpecDirs: ['/repo/aiocs/sources', '/Users/test/.aiocs/sources', '/app/sources'],
+      sourceSpecDirs: ['/repo-root/sources', '/user-home/.aiocs/sources', '/container/sources'],
     });
   });
 
@@ -91,16 +91,16 @@ describe('daemon runtime', () => {
   it('parses daemon booleans and source spec dirs', () => {
     const config = parseDaemonConfig({
       AIOCS_DAEMON_FETCH_ON_START: 'false',
-      AIOCS_SOURCE_SPEC_DIRS: ' /tmp/one , , /tmp/two ',
+      AIOCS_SOURCE_SPEC_DIRS: ' /temp/one , , /temp/two ',
     }, {
-      bundledSourceDir: '/repo/aiocs/sources',
-      containerSourceDir: '/app/sources',
-      userSourceDir: '/Users/test/.aiocs/sources',
+      bundledSourceDir: '/repo-root/sources',
+      containerSourceDir: '/container/sources',
+      userSourceDir: '/user-home/.aiocs/sources',
     });
 
     expect(config.fetchOnStart).toBe(false);
     expect(config.strictSourceSpecDirs).toBe(true);
-    expect(config.sourceSpecDirs).toEqual(['/tmp/one', '/tmp/two']);
+    expect(config.sourceSpecDirs).toEqual(['/temp/one', '/temp/two']);
   });
 
   it('rejects an explicitly empty source spec dir list', () => {
