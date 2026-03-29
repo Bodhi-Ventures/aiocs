@@ -93,6 +93,10 @@ Failures still exit with status `1`, but emit a JSON error document instead of h
 
 The full stable JSON contract lives in [docs/json-contract.md](./docs/json-contract.md).
 
+## Codex integration
+
+For Codex-first setup, automatic-use guidance, MCP recommendations, and subagent examples, see [docs/codex-integration.md](./docs/codex-integration.md).
+
 ## Built-in sources
 
 Initial source specs are shipped in `sources/`:

@@ -37,10 +37,12 @@ describe('release assets', () => {
     });
   });
 
-  it('ships a license, JSON contract doc, and agent skill', () => {
+  it('ships a license, docs contract/integration docs, agent skill, and example agent config', () => {
     const licensePath = join(repoRoot, 'LICENSE');
     const contractPath = join(repoRoot, 'docs', 'json-contract.md');
+    const codexIntegrationPath = join(repoRoot, 'docs', 'codex-integration.md');
     const skillPath = join(repoRoot, 'skills', 'aiocs', 'SKILL.md');
+    const exampleAgentPath = join(repoRoot, 'docs', 'examples', 'codex-agents', 'aiocs-docs-specialist.example.toml');
 
     expect(existsSync(licensePath)).toBe(true);
     expect(readFileSync(licensePath, 'utf8')).toContain('MIT License');
@@ -49,11 +51,24 @@ describe('release assets', () => {
     expect(readFileSync(contractPath, 'utf8')).toContain('CLI JSON Contract');
     expect(readFileSync(contractPath, 'utf8')).toContain('daemon.started');
 
+    expect(existsSync(codexIntegrationPath)).toBe(true);
+    const codexIntegration = readFileSync(codexIntegrationPath, 'utf8');
+    expect(codexIntegration).toContain('Codex Integration');
+    expect(codexIntegration).toContain('aiocs-mcp');
+    expect(codexIntegration).toContain('~/.codex/skills');
+    expect(codexIntegration).toContain('~/.codex/agents');
+
     expect(existsSync(skillPath)).toBe(true);
     const skillBody = readFileSync(skillPath, 'utf8');
     expect(skillBody).toContain('aiocs');
     expect(skillBody).toContain('--json');
     expect(skillBody).toContain('aiocs-mcp');
+
+    expect(existsSync(exampleAgentPath)).toBe(true);
+    const exampleAgent = readFileSync(exampleAgentPath, 'utf8');
+    expect(exampleAgent).toContain('aiocs_docs_specialist');
+    expect(exampleAgent).toContain('pnpm');
+    expect(exampleAgent).toContain('dev:mcp');
   });
 
   it('ships CI and release workflows aligned with validation and npm publishing', () => {

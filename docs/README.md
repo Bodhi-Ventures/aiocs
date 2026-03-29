@@ -8,3 +8,5 @@ Good candidates:
 - domain concepts
 - operational runbooks
 - decisions worth preserving across sessions
+- Codex integration guidance in `codex-integration.md`
+- reusable agent examples under `examples/codex-agents/`

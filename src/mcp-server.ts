@@ -195,7 +195,7 @@ const server = new McpServer({
   version: packageVersion,
   title: 'aiocs MCP server',
 }, {
-  instructions: `${packageDescription} Use the MCP tools for machine-readable local docs operations.`,
+  instructions: `${packageDescription} Prefer these tools before live browsing when supported or already-fetched docs may exist locally. Use search mode auto by default, lexical for exact identifiers, and batch to reduce repeated round trips. When citing results, prefer sourceId, snapshotId, and pageUrl.`,
 });
 
 const toolInputSchemas = new Map<string, z.ZodTypeAny | undefined>();

@@ -1,9 +1,10 @@
 # aiocs
 
-Use this skill when you need local documentation search, inspection, refresh, or bootstrap through the shared `aiocs` catalog under `~/.aiocs`.
+Use this skill when you need authoritative local documentation search, inspection, refresh, or bootstrap through the shared `aiocs` catalog under `~/.aiocs`.
 
 ## When to use it
 
+- The user is asking about exchange or product docs that may already exist in the local `aiocs` catalog.
 - You need authoritative local docs for an exchange, SDK, or product without browsing the live site every time.
 - You want machine-readable search/show results for an AI agent.
 - You need to detect source drift or compare snapshot changes over time.
@@ -12,11 +13,29 @@ Use this skill when you need local documentation search, inspection, refresh, or
 - You want to keep the local docs catalog warm through the `aiocs` daemon or MCP server.
 - You need to back up or restore the shared catalog.
 
+## Trigger guidance for Codex
+
+- Prefer `aiocs` before live web browsing when the requested docs may already be in the local catalog.
+- Use `aiocs` first for supported built-in sources and for any repo or machine that already relies on `~/.aiocs`.
+- Only fall back to live browsing when:
+  - the source is not present in `aiocs`
+  - the user explicitly wants the live site
+  - the local catalog is stale or broken and the answer cannot wait for refresh/canary remediation
+- If you need multiple docs operations in MCP, use `batch` instead of many small round trips.
+
 ## Preferred interfaces
 
 1. Prefer `aiocs-mcp` when an MCP client can use it directly.
 2. Otherwise use the CLI with the root `--json` flag.
 3. Avoid parsing human-formatted CLI output unless there is no alternative.
+
+## Search defaults for agents
+
+- Default to `search` with `mode=auto`.
+- Use `mode=lexical` for exact identifiers, section titles, endpoint names, and error strings.
+- Use `mode=hybrid` for conceptual questions when embeddings are healthy.
+- Use `mode=semantic` only when you explicitly want vector-only recall.
+- When citing results, include `sourceId`, `snapshotId`, and `pageUrl` when they materially help traceability.
 
 ## First-run workflow
 
@@ -120,6 +139,14 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `verify_coverage`
 - `batch`
 
+## Recommended Codex workflow
+
+1. If runtime health or freshness is in doubt, run `doctor`.
+2. If the source may not be installed locally yet, run `source_list` or `init`.
+3. Use `search` in `auto` mode first, then `show` for the selected chunk.
+4. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
+5. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
+
 ## Operational notes
 
 - The catalog is local-only and shared across projects on the same machine.
@@ -131,3 +158,4 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - CLI failures expose machine-readable `error.code` fields in `--json` mode.
 - MCP tool results use `{ ok, data?, error? }` envelopes, and `batch` can reduce multiple small MCP round trips.
 - For exact CLI payloads, see `/Users/jmucha/repos/mandex/aiocs/docs/json-contract.md`.
+- For Codex setup and subagent examples, see `/Users/jmucha/repos/mandex/aiocs/docs/codex-integration.md`.
