@@ -81,7 +81,11 @@ This section documents the stable top-level `data` payload per command.
 
 ```json
 {
-  "sourceSpecDir": "/absolute/path/to/aiocs/sources",
+  "sourceSpecDirs": [
+    "/absolute/path/to/aiocs/sources",
+    "<home>/.aiocs/sources"
+  ],
+  "userSourceDir": "<home>/.aiocs/sources",
   "fetched": false,
   "initializedSources": [
     {

@@ -28,7 +28,7 @@ import {
   importCatalogBackup,
   fetchSources,
   getDoctorReport,
-  initBuiltInSources,
+  initManagedSources,
   linkProjectSources,
   listSnapshotsForSource,
   listSources,
@@ -278,19 +278,20 @@ program
 
 program
   .command('init')
-  .description('Register bundled built-in source specs and optionally fetch them.')
-  .option('--fetch', 'fetch built-in sources immediately')
+  .description('Register managed source specs from the bundled repo directory and ~/.aiocs/sources, then optionally fetch them.')
+  .option('--fetch', 'fetch managed sources immediately')
   .option('--no-fetch', 'skip immediate fetching after bootstrapping')
   .action(async (options: { fetch?: boolean }, command: Command) => {
     await executeCommand(command, 'init', async () => {
-      const result = await initBuiltInSources({
+      const result = await initManagedSources({
         fetch: options.fetch ?? false,
       });
 
       return {
         data: result,
         human: [
-          `Initialized ${result.initializedSources.length} built-in sources from ${result.sourceSpecDir}`,
+          `Initialized ${result.initializedSources.length} managed sources from ${result.sourceSpecDirs.length} directories`,
+          ...result.sourceSpecDirs.map((directory) => `Managed source dir: ${directory}`),
           `User-managed source specs live under ${getManagedSourceSpecDirectories().userSourceDir}`,
           ...(result.removedSourceIds.length > 0
             ? [`Removed managed sources: ${result.removedSourceIds.join(', ')}`]
@@ -300,7 +301,7 @@ program
                 const verb = entry.reused ? 'Reused' : 'Fetched';
                 return `${verb} ${entry.sourceId} -> ${entry.snapshotId} (${entry.pageCount} pages)`;
               })
-            : [result.fetched ? 'No built-in sources were fetched.' : 'Skipped fetching built-in sources.']),
+            : [result.fetched ? 'No managed sources were fetched.' : 'Skipped fetching managed sources.']),
         ],
       };
     });

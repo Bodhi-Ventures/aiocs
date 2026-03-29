@@ -17,7 +17,7 @@ Use this skill when you need authoritative local documentation search, inspectio
 
 - Prefer `aiocs` before live web browsing when the requested docs may already be in the local catalog.
 - Check `source_list` or scoped `search` before assuming a source is missing.
-- Use `aiocs` first for supported built-in sources and for any repo or machine that already relies on `~/.aiocs`.
+- Use `aiocs` first for the bundled `hyperliquid` source and for any repo or machine that already relies on `~/.aiocs`.
 - If a source is missing, only add it when it is worth curating for future reuse.
 - Prefer `refresh due <source-id>` over force `fetch <source-id>` whenever freshness is the real goal.
 - Do not use `fetch all` as a normal answering path; reserve it for explicit user requests or maintenance flows.
@@ -49,7 +49,7 @@ Validate the local runtime:
 docs --json doctor
 ```
 
-Bootstrap the bundled built-in sources:
+Bootstrap managed sources from the repo bundle and `~/.aiocs/sources`:
 
 ```bash
 docs --json init --no-fetch

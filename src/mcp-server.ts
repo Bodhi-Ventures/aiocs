@@ -15,7 +15,7 @@ import {
   getEmbeddingStatus,
   getDoctorReport,
   importCatalogBackup,
-  initBuiltInSources,
+  initManagedSources,
   linkProjectSources,
   listSnapshotsForSource,
   listSources,
@@ -251,7 +251,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     version: packageVersion,
   }),
   doctor: async () => getDoctorReport(),
-  init: async (args = {}) => initBuiltInSources({
+  init: async (args = {}) => initManagedSources({
     ...(typeof args.fetch === 'boolean' ? { fetch: args.fetch } : {}),
   }),
   source_upsert: async (args = {}) => upsertSourceFromSpecFile(args.specFile as string),
@@ -399,12 +399,12 @@ registerAiocsTool(
   'init',
   {
     title: 'Init',
-    description: 'Bootstrap the bundled built-in source specs and optionally fetch them.',
+    description: 'Bootstrap managed source specs from the bundled repo directory and ~/.aiocs/sources, then optionally fetch them.',
     inputSchema: z.object({
       fetch: z.boolean().optional(),
     }),
     outputSchema: z.object({
-      sourceSpecDir: z.string(),
+      sourceSpecDirs: z.array(z.string()),
       userSourceDir: z.string(),
       fetched: z.boolean(),
       initializedSources: z.array(z.object({

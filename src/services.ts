@@ -14,6 +14,7 @@ import { processEmbeddingJobs } from './hybrid/worker.js';
 import { getAiocsConfigDir, getAiocsDataDir, getAiocsSourcesDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config.js';
+import { uniqueResolvedPaths } from './spec/source-spec-files.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 
 export type SearchOptions = {
@@ -380,11 +381,11 @@ export async function verifyCoverage(input: {
   });
 }
 
-export async function initBuiltInSources(options?: {
+export async function initManagedSources(options?: {
   fetch?: boolean;
-  sourceSpecDir?: string;
+  sourceSpecDirs?: string[];
 }): Promise<{
-  sourceSpecDir: string;
+  sourceSpecDirs: string[];
   userSourceDir: string;
   fetched: boolean;
   initializedSources: Array<{
@@ -401,14 +402,19 @@ export async function initBuiltInSources(options?: {
     reused: boolean;
   }>;
 }> {
-  const sourceSpecDir = options?.sourceSpecDir ?? getBundledSourcesDir();
+  const sourceSpecDirs = uniqueResolvedPaths(
+    options?.sourceSpecDirs ?? [
+      getBundledSourcesDir(),
+      getAiocsSourcesDir(),
+    ],
+  );
   const fetched = options?.fetch ?? false;
   const userSourceDir = getAiocsSourcesDir();
 
   return withCatalog(async ({ catalog, dataDir }) => {
     const bootstrapped = await bootstrapSourceSpecs({
       catalog,
-      sourceSpecDirs: [sourceSpecDir],
+      sourceSpecDirs,
       strictSourceSpecDirs: true,
     });
 
@@ -434,7 +440,7 @@ export async function initBuiltInSources(options?: {
     }
 
     return {
-      sourceSpecDir,
+      sourceSpecDirs,
       userSourceDir,
       fetched,
       initializedSources: bootstrapped.sources,

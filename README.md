@@ -111,17 +111,15 @@ GitHub Actions publishes `@bodhi-ventures/aiocs` publicly to npm and creates the
 
 For Codex-first setup, automatic-use guidance, MCP recommendations, and subagent examples, see [docs/codex-integration.md](./docs/codex-integration.md).
 
-## Built-in sources
+## Managed sources
 
-Initial source specs are shipped in `sources/`:
+The open-source repo bundles `hyperliquid` in `sources/`. Additional machine-local source specs
+belong in `~/.aiocs/sources`.
 
-- `synthetix`
-- `hyperliquid`
-- `lighter`
-- `nado`
-- `ethereal`
+`docs init` bootstraps both managed locations, so source behavior is the same regardless of
+whether a spec lives in the repo or in `~/.aiocs/sources`.
 
-Bootstrap them in one command:
+Bootstrap managed sources in one command:
 
 ```bash
 docs init --no-fetch

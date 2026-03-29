@@ -13,6 +13,37 @@ import { startDocsServer } from '../helpers/docs-server.js';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const distMcpPath = `${repoRoot}/dist/mcp-server.js`;
 
+function writeSourceSpec(specPath: string, id: string, label: string) {
+  writeFileSync(specPath, `
+id: ${id}
+label: ${label}
+startUrls:
+  - https://example.test/${id}
+allowedHosts:
+  - example.test
+discovery:
+  include:
+    - https://example.test/${id}/**
+  exclude: []
+  maxPages: 5
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+`);
+}
+
+function seedUserManagedSourceSpecs(userSourceDir: string) {
+  mkdirSync(userSourceDir, { recursive: true });
+  writeSourceSpec(join(userSourceDir, 'ethereal.yaml'), 'ethereal', 'Ethereal Docs');
+  writeSourceSpec(join(userSourceDir, 'lighter.yaml'), 'lighter', 'Lighter Docs');
+  writeSourceSpec(join(userSourceDir, 'nado.yaml'), 'nado', 'Nado Docs');
+  writeSourceSpec(join(userSourceDir, 'synthetix.yaml'), 'synthetix', 'Synthetix Docs');
+}
+
 function stringEnv(extra: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries({
@@ -48,7 +79,9 @@ describe('mcp server', () => {
     const docsServer = await startDocsServer();
     const specPath = join(root, 'mcp-selector.yaml');
     const projectPath = join(root, 'workspace', 'desk');
+    const userSourceDir = join(root, 'user-sources');
     mkdirSync(projectPath, { recursive: true });
+    seedUserManagedSourceSpecs(userSourceDir);
 
     writeFileSync(specPath, `
 id: mcp-selector
@@ -78,6 +111,7 @@ schedule:
       env: stringEnv({
         AIOCS_DATA_DIR: join(root, 'data'),
         AIOCS_CONFIG_DIR: join(root, 'config'),
+        AIOCS_SOURCES_DIR: userSourceDir,
       }),
       stderr: 'pipe',
     });
@@ -141,8 +175,12 @@ schedule:
           fetch: false,
         },
       });
-      expect(toolData<{ initializedSources: Array<{ sourceId: string }> }>(init)).toMatchObject({
-        userSourceDir: expect.stringContaining('.aiocs/sources'),
+      expect(toolData<{ initializedSources: Array<{ sourceId: string }>; sourceSpecDirs: string[]; userSourceDir: string }>(init)).toMatchObject({
+        sourceSpecDirs: expect.arrayContaining([
+          join(repoRoot, 'sources'),
+          userSourceDir,
+        ]),
+        userSourceDir,
         initializedSources: expect.arrayContaining([
           expect.objectContaining({ sourceId: 'ethereal' }),
           expect.objectContaining({ sourceId: 'hyperliquid' }),

@@ -13,6 +13,37 @@ const cliPath = `${repoRoot}/src/cli.ts`;
 const tsxPath = `${repoRoot}/node_modules/.bin/tsx`;
 const distCliPath = `${repoRoot}/dist/cli.js`;
 
+function writeSourceSpec(specPath: string, id: string, label: string) {
+  writeFileSync(specPath, `
+id: ${id}
+label: ${label}
+startUrls:
+  - https://example.test/${id}
+allowedHosts:
+  - example.test
+discovery:
+  include:
+    - https://example.test/${id}/**
+  exclude: []
+  maxPages: 5
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+`);
+}
+
+function seedUserManagedSourceSpecs(userSourceDir: string) {
+  mkdirSync(userSourceDir, { recursive: true });
+  writeSourceSpec(join(userSourceDir, 'ethereal.yaml'), 'ethereal', 'Ethereal Docs');
+  writeSourceSpec(join(userSourceDir, 'lighter.yaml'), 'lighter', 'Lighter Docs');
+  writeSourceSpec(join(userSourceDir, 'nado.yaml'), 'nado', 'Nado Docs');
+  writeSourceSpec(join(userSourceDir, 'synthetix.yaml'), 'synthetix', 'Synthetix Docs');
+}
+
 async function runCli(
   runtime: 'tsx' | 'dist',
   args: string[],
@@ -86,10 +117,13 @@ describe('CLI commands', () => {
   it.each(['tsx', 'dist'] as const)(
     'bootstraps built-in sources and emits doctor output with %s runtime',
     async (runtime) => {
+      const userSourceDir = join(root, 'user-sources');
+      seedUserManagedSourceSpecs(userSourceDir);
       const env = {
         ...process.env,
         AIOCS_DATA_DIR: join(root, 'data'),
         AIOCS_CONFIG_DIR: join(root, 'config'),
+        AIOCS_SOURCES_DIR: userSourceDir,
       };
 
       const init = await runCli(runtime, ['--json', 'init', '--no-fetch'], { cwd: root, env });
@@ -99,14 +133,18 @@ describe('CLI commands', () => {
         command: 'init',
         data: {
           fetched: false,
-          userSourceDir: expect.stringContaining('.aiocs/sources'),
-          initializedSources: [
+          sourceSpecDirs: expect.arrayContaining([
+            join(repoRoot, 'sources'),
+            userSourceDir,
+          ]),
+          userSourceDir,
+          initializedSources: expect.arrayContaining([
             expect.objectContaining({ sourceId: 'ethereal' }),
             expect.objectContaining({ sourceId: 'hyperliquid' }),
             expect.objectContaining({ sourceId: 'lighter' }),
             expect.objectContaining({ sourceId: 'nado' }),
             expect.objectContaining({ sourceId: 'synthetix' }),
-          ],
+          ]),
         },
       });
 
