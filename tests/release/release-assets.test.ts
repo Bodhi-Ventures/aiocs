@@ -14,6 +14,7 @@ const packageManifest = packageJson as Record<string, unknown> & {
 describe('release assets', () => {
   it('ships publishable package metadata', () => {
     expect(packageManifest.private).not.toBe(true);
+    expect(packageManifest.name).toBe('@bodhi-ventures/aiocs');
     expect(packageManifest.license).toBe('MIT');
     expect(packageManifest.repository).toEqual({
       type: 'git',
@@ -31,6 +32,10 @@ describe('release assets', () => {
       'README.md',
       'skills',
     ]));
+    expect(packageManifest.publishConfig).toEqual({
+      access: 'public',
+      provenance: true,
+    });
     expect(packageManifest.bin).toEqual({
       docs: './dist/cli.js',
       'aiocs-mcp': './dist/mcp-server.js',
@@ -69,6 +74,15 @@ describe('release assets', () => {
     expect(exampleAgent).toContain('aiocs_docs_specialist');
     expect(exampleAgent).toContain('pnpm');
     expect(exampleAgent).toContain('dev:mcp');
+
+    const readmePath = join(repoRoot, 'README.md');
+    expect(existsSync(readmePath)).toBe(true);
+    const readme = readFileSync(readmePath, 'utf8');
+    expect(readme).toContain('npm install -g @bodhi-ventures/aiocs');
+    expect(readme).toContain('## Release');
+    expect(readme).toContain('git tag vX.Y.Z');
+    expect(readme).toContain('git push origin main');
+    expect(readme).toContain('git push origin vX.Y.Z');
   });
 
   it('ships CI and release workflows aligned with validation and npm publishing', () => {
@@ -89,12 +103,22 @@ describe('release assets', () => {
 
     expect(existsSync(releaseWorkflowPath)).toBe(true);
     const workflow = readFileSync(releaseWorkflowPath, 'utf8');
-    expect(workflow).toContain('workflow_dispatch');
-    expect(workflow).toContain('npm publish --provenance');
+    expect(workflow).toContain('tags:');
+    expect(workflow).toContain("- 'v*.*.*'");
+    expect(workflow).not.toContain('workflow_dispatch');
+    expect(workflow).toContain('PACKAGE_NAME="@bodhi-ventures/aiocs"');
+    expect(workflow).toContain('TAG_VERSION="${GITHUB_REF_NAME#v}"');
+    expect(workflow).toContain('npm view "${PACKAGE_NAME}@${TAG_VERSION}" version');
+    expect(workflow).toContain('npm publish');
+    expect(workflow).toContain('--access public');
+    expect(workflow).toContain('--provenance');
     expect(workflow).toContain('gh release create');
-    expect(workflow).toContain('git tag');
-    expect(workflow.indexOf('npm version')).toBeLessThan(workflow.indexOf('pnpm build'));
-    expect(workflow.indexOf('git push origin main')).toBeLessThan(workflow.indexOf('npm publish --provenance'));
+    expect(workflow).not.toContain('git config user.name');
+    expect(workflow).not.toContain('git config user.email');
+    expect(workflow).not.toContain('npm version');
+    expect(workflow).not.toContain('git tag');
+    expect(workflow).not.toContain('git commit');
+    expect(workflow).not.toContain('git push origin HEAD:main');
     expect(workflow.indexOf('npm publish --provenance')).toBeLessThan(workflow.indexOf('gh release create'));
   });
 });

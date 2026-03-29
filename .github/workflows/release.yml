@@ -1,21 +1,17 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Exact semver version to release (for example 0.2.0)
-        required: true
-        type: string
-      npm_tag:
-        description: npm dist-tag to publish under
-        required: false
-        default: latest
-        type: string
+  push:
+    tags:
+      - 'v*.*.*'
 
 permissions:
   contents: write
   id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -43,42 +39,39 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
           registry-url: https://registry.npmjs.org
 
-      - name: Configure git author
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Prepare release commit and tag
+      - name: Validate release contract
         shell: bash
         run: |
-          current_version="$(node -p "require('./package.json').version")"
-          target_version="${{ inputs.version }}"
+          set -euo pipefail
 
-          if [ "${current_version}" = "${target_version}" ]; then
-            if git rev-parse -q --verify "refs/tags/v${target_version}" >/dev/null; then
-              echo "Reusing existing release state for v${target_version}."
-              exit 0
-            fi
+          PACKAGE_NAME="@bodhi-ventures/aiocs"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          PACKAGE_MANIFEST_NAME="$(node -p "require('./package.json').name")"
 
-            git tag "v${target_version}"
-            exit 0
-          fi
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "${GITHUB_ENV}"
+          echo "TAG_VERSION=${TAG_VERSION}" >> "${GITHUB_ENV}"
 
-          if git rev-parse -q --verify "refs/tags/v${target_version}" >/dev/null; then
-            echo "Tag v${target_version} already exists for a different package state." >&2
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must match vX.Y.Z." >&2
             exit 1
           fi
 
-          npm version "${target_version}" --no-git-tag-version
-          git add package.json
-          git commit -m "release: v${target_version}"
-          git tag "v${target_version}"
+          if [[ "${PACKAGE_MANIFEST_NAME}" != "${PACKAGE_NAME}" ]]; then
+            echo "package.json name must be ${PACKAGE_NAME}, got ${PACKAGE_MANIFEST_NAME}." >&2
+            exit 1
+          fi
+
+          if [[ "${PACKAGE_VERSION}" != "${TAG_VERSION}" ]]; then
+            echo "package.json version ${PACKAGE_VERSION} does not match tag ${TAG_VERSION}." >&2
+            exit 1
+          fi
 
       - name: Validate release candidate
         run: |
@@ -86,17 +79,13 @@ jobs:
           pnpm test
           pnpm build
           npm pack --dry-run
-
-      - name: Push release commit and tag
-        run: |
-          git push origin HEAD:main
-          git push origin "v${{ inputs.version }}"
+          node dist/cli.js --version
 
       - name: Check npm release status
         id: npm_release
         shell: bash
         run: |
-          if npm view "aiocs@${{ inputs.version }}" version >/dev/null 2>&1; then
+          if npm view "${PACKAGE_NAME}@${TAG_VERSION}" version >/dev/null 2>&1; then
             echo "published=true" >> "${GITHUB_OUTPUT}"
           else
             echo "published=false" >> "${GITHUB_OUTPUT}"
@@ -106,7 +95,7 @@ jobs:
         if: steps.npm_release.outputs.published != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public --tag "${{ inputs.npm_tag }}"
+        run: npm publish --provenance --access public
 
       - name: Check GitHub release status
         id: gh_release
@@ -114,7 +103,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          if gh release view "v${{ inputs.version }}" >/dev/null 2>&1; then
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             echo "exists=true" >> "${GITHUB_OUTPUT}"
           else
             echo "exists=false" >> "${GITHUB_OUTPUT}"
@@ -124,4 +113,4 @@ jobs:
         if: steps.gh_release.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "v${{ inputs.version }}" --generate-notes --verify-tag
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag

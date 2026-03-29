@@ -7,7 +7,7 @@ Use `aiocs` as the local-first documentation system for Codex. The best results 
 Install the CLI and MCP binary globally:
 
 ```bash
-npm install -g aiocs
+npm install -g @bodhi-ventures/aiocs
 docs --version
 aiocs-mcp
 ```

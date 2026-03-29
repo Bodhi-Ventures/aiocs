@@ -1,5 +1,5 @@
 {
-  "name": "aiocs",
+  "name": "@bodhi-ventures/aiocs",
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
@@ -18,6 +18,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/Bodhi-Ventures/aiocs.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "packageManager": "pnpm@9.15.9",
   "files": [

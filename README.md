@@ -28,7 +28,7 @@ For testing or local overrides, set:
 ## Install
 
 ```bash
-npm install --global aiocs
+npm install -g @bodhi-ventures/aiocs
 docs --version
 ```
 
@@ -92,6 +92,20 @@ Failures still exit with status `1`, but emit a JSON error document instead of h
 ```
 
 The full stable JSON contract lives in [docs/json-contract.md](./docs/json-contract.md).
+
+## Release
+
+Stable releases are tag-driven. Bump `package.json.version`, commit the change, then create and push a matching stable tag:
+
+```bash
+git add package.json
+git commit -m "release: vX.Y.Z"
+git tag vX.Y.Z
+git push origin main
+git push origin vX.Y.Z
+```
+
+GitHub Actions publishes `@bodhi-ventures/aiocs` publicly to npm and creates the GitHub release only from pushed tags matching `vX.Y.Z`. The workflow validates that the tag exactly matches `package.json.version` and is safe to rerun after partial success.
 
 ## Codex integration
 
@@ -391,15 +405,9 @@ The MCP server exposes the same shared operations as the CLI without shell parsi
 The repo ships two GitHub Actions workflows:
 
 - [ci.yml](./.github/workflows/ci.yml): validation for lint, tests, build, pack, and Docker smoke coverage
-- [release.yml](./.github/workflows/release.yml): manual release flow that validates the package, prepares or reuses the requested version and tag, publishes to npm, and creates a GitHub release
+- [release.yml](./.github/workflows/release.yml): tag-driven stable release flow that validates the tagged package state, publishes to npm, and creates a GitHub release
 
-The release workflow is triggered through `workflow_dispatch` and expects:
-
-- a `version` input
-- an optional `npm_tag` input
-- `NPM_TOKEN` in repository secrets
-
-The release job is retryable: if a version/tag already exists in git or npm, the workflow reuses that state and skips the already-completed publish or GitHub release step instead of forcing manual cleanup.
+The release workflow is triggered only by pushed stable tags matching `vX.Y.Z` and expects `NPM_TOKEN` in repository secrets. The release job is retryable: if `@bodhi-ventures/aiocs@X.Y.Z` already exists on npm or the GitHub release already exists for `vX.Y.Z`, the workflow skips the completed publication step and finishes the remaining one.
 
 Successful MCP results use an envelope:
 
@@ -407,7 +415,7 @@ Successful MCP results use an envelope:
 {
   "ok": true,
   "data": {
-    "name": "aiocs",
+    "name": "@bodhi-ventures/aiocs",
     "version": "0.1.0"
   }
 }

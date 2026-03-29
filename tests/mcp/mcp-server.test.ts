@@ -121,7 +121,7 @@ schedule:
         arguments: {},
       });
       expect(toolData<{ name: string; version: string }>(version)).toEqual({
-        name: 'aiocs',
+        name: '@bodhi-ventures/aiocs',
         version: packageJson.version,
       });
 
@@ -366,7 +366,7 @@ schedule:
             tool: 'version',
             ok: true,
             data: {
-              name: 'aiocs',
+              name: '@bodhi-ventures/aiocs',
               version: packageJson.version,
             },
           },

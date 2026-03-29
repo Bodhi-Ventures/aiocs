@@ -72,7 +72,7 @@ This section documents the stable top-level `data` payload per command.
 
 ```json
 {
-  "name": "aiocs",
+  "name": "@bodhi-ventures/aiocs",
   "version": "0.1.0"
 }
 ```
@@ -494,7 +494,7 @@ Successful MCP tool results:
 {
   "ok": true,
   "data": {
-    "name": "aiocs",
+    "name": "@bodhi-ventures/aiocs",
     "version": "0.1.0"
   }
 }

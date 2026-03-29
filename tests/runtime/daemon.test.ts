@@ -258,6 +258,18 @@ describe('daemon runtime', () => {
     const catalog = openCatalog({ dataDir });
 
     try {
+      await bootstrapSourceSpecs({
+        catalog,
+        sourceSpecDirs: [specDir],
+      });
+
+      const db = new Database(join(dataDir, 'catalog.sqlite'));
+      db.prepare('UPDATE sources SET next_due_at = ? WHERE id = ?').run(
+        '2999-01-01T00:00:00.000Z',
+        'daemon-idle',
+      );
+      db.close();
+
       const result = await runDaemonCycle({
         catalog,
         dataDir,
