@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -183,10 +184,12 @@ export function parseDaemonConfig(
     ? parseBoolean(env.AIOCS_DAEMON_FETCH_ON_START, 'AIOCS_DAEMON_FETCH_ON_START')
     : true;
 
+  const defaultContainerSourceDir = options.containerSourceDir
+    ?? (existsSync(DEFAULT_CONTAINER_SOURCE_DIR) ? DEFAULT_CONTAINER_SOURCE_DIR : undefined);
   const defaultSourceDirs = uniqueResolvedPaths([
     options.bundledSourceDir ?? getBundledSourcesDir(),
     options.userSourceDir ?? getAiocsSourcesDir(env),
-    options.containerSourceDir ?? DEFAULT_CONTAINER_SOURCE_DIR,
+    ...(defaultContainerSourceDir ? [defaultContainerSourceDir] : []),
   ]);
 
   const sourceSpecDirs = env.AIOCS_SOURCE_SPEC_DIRS

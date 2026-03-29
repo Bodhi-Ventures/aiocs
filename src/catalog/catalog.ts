@@ -8,6 +8,7 @@ import { chunkMarkdown } from './chunking.js';
 import { buildSnapshotFingerprint, sha256 } from './fingerprint.js';
 import { canonicalizeProjectPath, resolveProjectScope } from './project-scope.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
+import { canonicalizeManagedSpecPath } from '../runtime/paths.js';
 import { resolveSourceCanary, type SourceSpec } from '../spec/source-spec.js';
 
 type OpenCatalogOptions = {
@@ -687,7 +688,7 @@ export function openCatalog(options: OpenCatalogOptions) {
           next_canary_due_at: string | null;
           config_hash: string;
         } | undefined;
-      const resolvedSpecPath = options?.specPath ? resolve(options.specPath) : null;
+      const resolvedSpecPath = options?.specPath ? canonicalizeManagedSpecPath(options.specPath) : null;
       const nextDueAt = !existing
         ? timestamp
         : existing.config_hash === configHash
@@ -793,7 +794,7 @@ export function openCatalog(options: OpenCatalogOptions) {
       return rows.map((row) => ({
         id: row.id,
         label: row.label,
-        specPath: row.spec_path,
+        specPath: row.spec_path ? canonicalizeManagedSpecPath(row.spec_path) : null,
         nextDueAt: row.next_due_at,
         isDue: Date.parse(row.next_due_at) <= Date.now(),
         nextCanaryDueAt: row.next_canary_due_at,
@@ -1085,8 +1086,11 @@ export function openCatalog(options: OpenCatalogOptions) {
       }
 
       const activeSourceKeys = new Set(
-        input.activeSources.map((source) => `${source.sourceId}::${resolve(source.specPath)}`),
+        input.activeSources.map((source) =>
+          `${source.sourceId}::${canonicalizeManagedSpecPath(source.specPath)}`),
       );
+      const normalizedManagedRoots = input.managedRoots.map((managedRoot) =>
+        canonicalizeManagedSpecPath(managedRoot));
       const rows = db.prepare(`
         SELECT id, spec_path
         FROM sources
@@ -1100,8 +1104,8 @@ export function openCatalog(options: OpenCatalogOptions) {
             return false;
           }
 
-          const normalizedSpecPath = resolve(row.spec_path);
-          return input.managedRoots.some((managedRoot) =>
+          const normalizedSpecPath = canonicalizeManagedSpecPath(row.spec_path);
+          return normalizedManagedRoots.some((managedRoot) =>
             normalizedSpecPath === managedRoot || normalizedSpecPath.startsWith(`${managedRoot}/`),
           ) && !activeSourceKeys.has(`${row.id}::${normalizedSpecPath}`);
         })

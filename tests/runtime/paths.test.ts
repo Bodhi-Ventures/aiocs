@@ -42,4 +42,13 @@ describe('runtime paths', () => {
     expect(paths.getAiocsConfigDir()).toBe(join(root, 'custom-config'));
     expect(paths.getAiocsSourcesDir()).toBe(join(root, 'custom-sources'));
   });
+
+  it('normalizes managed source paths to portable locations', async () => {
+    delete process.env.AIOCS_SOURCES_DIR;
+    const paths = await import('../../src/runtime/paths.js');
+
+    expect(paths.canonicalizeManagedSpecPath('/root/.aiocs/sources/ethereal.yaml')).toBe('~/.aiocs/sources/ethereal.yaml');
+    expect(paths.canonicalizeManagedSpecPath(join(originalEnv.HOME as string, '.aiocs', 'sources', 'nado.yaml'))).toBe('~/.aiocs/sources/nado.yaml');
+    expect(paths.canonicalizeManagedSpecPath('/app/sources/hyperliquid.yaml')).toBe('aiocs://bundled/hyperliquid.yaml');
+  });
 });

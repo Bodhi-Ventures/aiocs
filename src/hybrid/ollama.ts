@@ -17,6 +17,40 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
 }
 
+function normalizeEmbeddingWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function truncateEmbeddingText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const slice = value.slice(0, maxChars);
+  const lastWhitespace = slice.lastIndexOf(' ');
+  if (lastWhitespace >= Math.floor(maxChars * 0.8)) {
+    return slice.slice(0, lastWhitespace).trim();
+  }
+
+  return slice.trim();
+}
+
+export function prepareTextForEmbedding(
+  markdown: string,
+  maxChars: number,
+): string {
+  const withoutComments = markdown.replace(/<!--[\s\S]*?-->/g, ' ');
+  const withoutImages = withoutComments.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1');
+  const withoutLinks = withoutImages.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+  const withoutHtml = withoutLinks.replace(/<[^>]+>/g, ' ');
+  const withoutCodeFenceMarkers = withoutHtml
+    .replace(/```[^\n]*\n/g, '\n')
+    .replace(/```/g, '\n');
+  const withoutInlineCodeTicks = withoutCodeFenceMarkers.replace(/`([^`]+)`/g, '$1');
+  const normalized = normalizeEmbeddingWhitespace(withoutInlineCodeTicks);
+  return truncateEmbeddingText(normalized, maxChars);
+}
+
 async function parseJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) {
@@ -41,6 +75,9 @@ export async function embedTexts(
     return [];
   }
 
+  const preparedTexts = texts.map((text) =>
+    prepareTextForEmbedding(text, config.ollamaMaxInputChars));
+
   const response = await fetch(`${normalizeBaseUrl(config.ollamaBaseUrl)}/api/embed`, {
     method: 'POST',
     headers: {
@@ -49,7 +86,7 @@ export async function embedTexts(
     signal: AbortSignal.timeout(config.ollamaTimeoutMs),
     body: JSON.stringify({
       model: config.ollamaEmbeddingModel,
-      input: texts,
+      input: preparedTexts,
     }),
   }).catch((error: unknown) => {
     throw new AiocsError(

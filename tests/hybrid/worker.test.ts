@@ -58,6 +58,7 @@ const baseConfig: HybridRuntimeConfig = {
   ollamaBaseUrl: 'http://127.0.0.1:11434',
   ollamaEmbeddingModel: 'nomic-embed-text',
   ollamaTimeoutMs: 1_000,
+  ollamaMaxInputChars: 4_000,
   embeddingBatchSize: 16,
   embeddingJobsPerCycle: 2,
   lexicalCandidateWindow: 20,

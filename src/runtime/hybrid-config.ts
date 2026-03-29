@@ -11,6 +11,7 @@ export type HybridRuntimeConfig = {
   ollamaBaseUrl: string;
   ollamaEmbeddingModel: string;
   ollamaTimeoutMs: number;
+  ollamaMaxInputChars: number;
   embeddingBatchSize: number;
   embeddingJobsPerCycle: number;
   lexicalCandidateWindow: number;
@@ -66,7 +67,8 @@ export function getHybridRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Hy
     embeddingProvider: 'ollama',
     ollamaBaseUrl: env.AIOCS_OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434',
     ollamaEmbeddingModel: env.AIOCS_OLLAMA_EMBEDDING_MODEL ?? 'nomic-embed-text',
-    ollamaTimeoutMs: parsePositiveInteger(env.AIOCS_OLLAMA_TIMEOUT_MS, 'AIOCS_OLLAMA_TIMEOUT_MS', 1_000),
+    ollamaTimeoutMs: parsePositiveInteger(env.AIOCS_OLLAMA_TIMEOUT_MS, 'AIOCS_OLLAMA_TIMEOUT_MS', 10_000),
+    ollamaMaxInputChars: parsePositiveInteger(env.AIOCS_OLLAMA_MAX_INPUT_CHARS, 'AIOCS_OLLAMA_MAX_INPUT_CHARS', 4_000),
     embeddingBatchSize: parsePositiveInteger(env.AIOCS_EMBEDDING_BATCH_SIZE, 'AIOCS_EMBEDDING_BATCH_SIZE', 32),
     embeddingJobsPerCycle: parsePositiveInteger(env.AIOCS_EMBEDDING_JOB_LIMIT_PER_CYCLE, 'AIOCS_EMBEDDING_JOB_LIMIT_PER_CYCLE', 2),
     lexicalCandidateWindow: parsePositiveInteger(env.AIOCS_LEXICAL_CANDIDATE_WINDOW, 'AIOCS_LEXICAL_CANDIDATE_WINDOW', 40),
