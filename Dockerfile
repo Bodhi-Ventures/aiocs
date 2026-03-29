@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.57.0-noble AS build
+FROM mcr.microsoft.com/playwright:v1.58.2-noble AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
@@ -17,7 +17,7 @@ COPY README.md ./
 
 RUN pnpm build && pnpm prune --prod
 
-FROM mcr.microsoft.com/playwright:v1.57.0-noble
+FROM mcr.microsoft.com/playwright:v1.58.2-noble
 
 ENV NODE_ENV=production
 
