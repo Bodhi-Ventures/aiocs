@@ -38,8 +38,9 @@ Codex does not automatically invoke a custom subagent just because one exists. T
 To make Codex discover `aiocs` automatically on this machine, expose the skill in the global Codex skill directory:
 
 ```bash
+AIOCS_REPO=/absolute/path/to/your/aiocs/checkout
 mkdir -p ~/.codex/skills
-ln -sfn /Users/jmucha/repos/mandex/aiocs/skills/aiocs ~/.codex/skills/aiocs
+ln -sfn "$AIOCS_REPO/skills/aiocs" ~/.codex/skills/aiocs
 ```
 
 Once that symlink exists, Codex can load the `aiocs` skill directly from the global skills catalog and prefer local docs without you explicitly calling a subagent.
@@ -49,17 +50,18 @@ Once that symlink exists, Codex can load the `aiocs` skill directly from the glo
 There are two supported subagent patterns:
 
 - Repo example for development and debugging:
-  [`docs/examples/codex-agents/aiocs-docs-specialist.example.toml`](/Users/jmucha/repos/mandex/aiocs/docs/examples/codex-agents/aiocs-docs-specialist.example.toml)
+  [`docs/examples/codex-agents/aiocs-docs-specialist.example.toml`](examples/codex-agents/aiocs-docs-specialist.example.toml)
 - Install-ready global agent definition:
-  [`/Users/jmucha/repos/ai-skills/agents/aiocs-docs-specialist.toml`](/Users/jmucha/repos/ai-skills/agents/aiocs-docs-specialist.toml)
+  `ai-skills/agents/aiocs-docs-specialist.toml` from your local `ai-skills` checkout
 
 The repo example is intentionally development-oriented and uses a checkout-local MCP command. The global agent points at the globally installed `aiocs-mcp` binary.
 
 To expose the install-ready global agent to Codex on this machine:
 
 ```bash
+AI_SKILLS_REPO=/absolute/path/to/your/ai-skills/checkout
 mkdir -p ~/.codex/agents
-ln -sfn /Users/jmucha/repos/ai-skills/agents/aiocs-docs-specialist.toml ~/.codex/agents/aiocs-docs-specialist.toml
+ln -sfn "$AI_SKILLS_REPO/agents/aiocs-docs-specialist.toml" ~/.codex/agents/aiocs-docs-specialist.toml
 ```
 
 ## Suggested Codex flows

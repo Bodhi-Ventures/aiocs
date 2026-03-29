@@ -10,7 +10,7 @@ fix any release-blocking issues discovered during the first live run.
 
 ## Current State
 
-- Repository `/Users/jmucha/repos/mandex/aiocs` is clean on `main`.
+- Repository root is the `aiocs` checkout on `main`.
 - `package.json` is configured for the scoped package `@bodhi-ventures/aiocs` at version `0.1.0`.
 - Release workflow is tag-driven on stable tags `vX.Y.Z`.
 - GitHub auth is available locally through `gh`.

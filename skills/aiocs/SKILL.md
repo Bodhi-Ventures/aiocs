@@ -170,5 +170,5 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - Newly added or changed sources become due immediately, so `refresh due <source-id>` is the safe first refresh path after upsert.
 - CLI failures expose machine-readable `error.code` fields in `--json` mode.
 - MCP tool results use `{ ok, data?, error? }` envelopes, and `batch` can reduce multiple small MCP round trips.
-- For exact CLI payloads, see `/Users/jmucha/repos/mandex/aiocs/docs/json-contract.md`.
-- For Codex setup and subagent examples, see `/Users/jmucha/repos/mandex/aiocs/docs/codex-integration.md`.
+- For exact CLI payloads, see `docs/json-contract.md`.
+- For Codex setup and subagent examples, see `docs/codex-integration.md`.

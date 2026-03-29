@@ -87,7 +87,7 @@ Update `tests/release/release-assets.test.ts` to expect:
 
 - [ ] **Step 2: Run targeted test to verify the current metadata fails**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/release/release-assets.test.ts`
+Run: `pnpm --dir <repo-root> test tests/release/release-assets.test.ts`
 Expected: FAIL on package name or publish metadata assertions.
 
 - [ ] **Step 3: Update package metadata**
@@ -98,7 +98,7 @@ Modify `package.json`:
 
 - [ ] **Step 4: Re-run the targeted metadata test**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/release/release-assets.test.ts`
+Run: `pnpm --dir <repo-root> test tests/release/release-assets.test.ts`
 Expected: PASS for the updated package metadata expectations.
 
 ## Task 2: Replace the mutable release workflow with a tag-driven pipeline
@@ -118,7 +118,7 @@ Update `tests/release/release-assets.test.ts` to assert the release workflow:
 
 - [ ] **Step 2: Run targeted release-asset test to confirm the current workflow fails**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/release/release-assets.test.ts`
+Run: `pnpm --dir <repo-root> test tests/release/release-assets.test.ts`
 Expected: FAIL because the current workflow still uses `workflow_dispatch` and mutable git steps.
 
 - [ ] **Step 3: Rewrite `release.yml` to the tag-only model**
@@ -134,7 +134,7 @@ Implement:
 
 - [ ] **Step 4: Re-run the targeted workflow test**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/release/release-assets.test.ts`
+Run: `pnpm --dir <repo-root> test tests/release/release-assets.test.ts`
 Expected: PASS for the release workflow assertions.
 
 ## Task 3: Align CI and documentation with the scoped tag-release contract
@@ -153,7 +153,7 @@ Extend `tests/release/release-assets.test.ts` to assert:
 
 - [ ] **Step 2: Run the targeted test to confirm doc/CI mismatches**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/release/release-assets.test.ts`
+Run: `pnpm --dir <repo-root> test tests/release/release-assets.test.ts`
 Expected: FAIL until README/CI are aligned.
 
 - [ ] **Step 3: Update README and CI**
@@ -166,7 +166,7 @@ Modify `.github/workflows/ci.yml` only if needed to keep the smoke/validation su
 
 - [ ] **Step 4: Re-run the targeted test**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/release/release-assets.test.ts`
+Run: `pnpm --dir <repo-root> test tests/release/release-assets.test.ts`
 Expected: PASS with the updated README and CI assertions.
 
 ## Task 4: Run full verification on the final release pipeline
@@ -177,10 +177,10 @@ Expected: PASS with the updated README and CI assertions.
 - [ ] **Step 1: Run the full repository verification stack**
 
 Run:
-- `pnpm --dir /Users/jmucha/repos/mandex/aiocs lint`
-- `pnpm --dir /Users/jmucha/repos/mandex/aiocs test`
-- `pnpm --dir /Users/jmucha/repos/mandex/aiocs build`
-- `cd /Users/jmucha/repos/mandex/aiocs && npm pack --dry-run`
+- `pnpm --dir <repo-root> lint`
+- `pnpm --dir <repo-root> test`
+- `pnpm --dir <repo-root> build`
+- `cd <repo-root> && npm pack --dry-run`
 
 Expected: all commands pass on the final tree.
 

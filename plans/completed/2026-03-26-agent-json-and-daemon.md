@@ -51,7 +51,7 @@ Verify they expect exit code `1` and a JSON error envelope.
 
 - [ ] **Step 3: Run the CLI tests and confirm failure**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/cli/commands.test.ts`
+Run: `pnpm --dir <repo-root> test tests/cli/commands.test.ts`
 
 Expected: FAIL because `--json` is not implemented.
 
@@ -79,7 +79,7 @@ Use temp dirs and the local test docs server where needed.
 
 - [ ] **Step 3: Run the daemon tests and confirm failure**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/runtime/daemon.test.ts`
+Run: `pnpm --dir <repo-root> test tests/runtime/daemon.test.ts`
 
 Expected: FAIL because daemon code does not exist yet.
 
@@ -109,7 +109,7 @@ Return arrays for multi-result commands instead of line-by-line output in JSON m
 
 - [ ] **Step 4: Run CLI tests**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/cli/commands.test.ts`
+Run: `pnpm --dir <repo-root> test tests/cli/commands.test.ts`
 
 Expected: PASS for the JSON cases.
 
@@ -143,7 +143,7 @@ Add `docs daemon` that:
 
 - [ ] **Step 5: Run daemon tests**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/runtime/daemon.test.ts`
+Run: `pnpm --dir <repo-root> test tests/runtime/daemon.test.ts`
 
 Expected: PASS.
 
@@ -191,18 +191,18 @@ State explicitly that local agents should prefer `--json` and that Docker keeps 
 
 - [ ] **Step 1: Run targeted CLI tests**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/cli/commands.test.ts`
+Run: `pnpm --dir <repo-root> test tests/cli/commands.test.ts`
 
 - [ ] **Step 2: Run targeted daemon tests**
 
-Run: `pnpm --dir /Users/jmucha/repos/mandex/aiocs test tests/runtime/daemon.test.ts`
+Run: `pnpm --dir <repo-root> test tests/runtime/daemon.test.ts`
 
 - [ ] **Step 3: Run full verification**
 
 Run:
-- `pnpm --dir /Users/jmucha/repos/mandex/aiocs lint`
-- `pnpm --dir /Users/jmucha/repos/mandex/aiocs test`
-- `pnpm --dir /Users/jmucha/repos/mandex/aiocs build`
+- `pnpm --dir <repo-root> lint`
+- `pnpm --dir <repo-root> test`
+- `pnpm --dir <repo-root> build`
 
 - [ ] **Step 4: Review and verifier gates**
 
@@ -215,4 +215,4 @@ Run the repo completion workflow, including:
 
 - [ ] **Step 5: Archive the plan when complete**
 
-Run the shared plan archiver against `/Users/jmucha/repos/mandex/aiocs`.
+Run the shared plan archiver against `<repo-root>`.

@@ -24,7 +24,7 @@ This design keeps `aiocs` as the canonical docs system:
 
 ## Why This Shape
 
-The current `aiocs` search path in [catalog.ts](/Users/jmucha/repos/mandex/aiocs/src/catalog/catalog.ts) is pure FTS5 BM25 over the latest successful snapshots. That is excellent for exact docs lookups, versioned terms, and API names. It is weaker for:
+The current `aiocs` search path in [catalog.ts](../src/catalog/catalog.ts) is pure FTS5 BM25 over the latest successful snapshots. That is excellent for exact docs lookups, versioned terms, and API names. It is weaker for:
 
 - synonym-heavy prompts
 - conceptual questions
