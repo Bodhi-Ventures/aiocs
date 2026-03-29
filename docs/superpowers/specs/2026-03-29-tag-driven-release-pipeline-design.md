@@ -65,6 +65,17 @@ The workflow must never mutate git state. It should validate the tag against `pa
 - create a GitHub release for the pushed tag
 - if a GitHub release already exists for that tag, do not recreate it
 
+### Rerun and Partial-Failure Policy
+
+Tag releases must be safely rerunnable.
+
+- `workflow_dispatch` is removed entirely; tag pushes are the only release trigger
+- if a rerun sees that `@bodhi-ventures/aiocs@X.Y.Z` is already published on npm, it must skip `npm publish` instead of failing
+- if a rerun sees that the GitHub release for `vX.Y.Z` already exists, it must skip release creation instead of failing
+- validation steps always run on every attempt, even when publish/release steps are skipped
+- if npm already contains `@bodhi-ventures/aiocs@X.Y.Z` but the checked-out tag does not match `package.json.version === X.Y.Z` or `package.json.name === @bodhi-ventures/aiocs`, the workflow must fail fast
+- the workflow should treat npm and GitHub release publication as independently idempotent so a partial success can be completed by rerunning the same tag job
+
 ### Git Behavior
 
 - the workflow never edits files
