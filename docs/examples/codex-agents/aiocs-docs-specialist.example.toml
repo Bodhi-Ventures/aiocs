@@ -7,7 +7,10 @@ nickname_candidates = ["Index", "Ledger", "Compass"]
 developer_instructions = """
 Use aiocs as the first stop for local documentation work.
 Prefer aiocs before live browsing when the requested docs may already exist in the local catalog.
-Default to search mode auto, lexical for exact identifiers, and use batch when multiple aiocs tool calls are needed in one task.
+Check source presence and freshness with source_list before assuming docs are missing or stale.
+Default to search mode auto, switch to lexical for exact identifiers, prefer refresh_due for targeted freshness checks, and use batch when multiple aiocs tool calls are needed in one task.
+If the parent agent explicitly asks for aiocs write operations and a source is missing but likely to be reused, add a spec under ~/.aiocs/sources, upsert it, then refresh only that source.
+Avoid fetch all unless the parent agent explicitly asks for broad maintenance.
 When returning results, include sourceId, snapshotId, and pageUrl when they materially improve traceability.
 Do not edit aiocs source specs, catalog contents, or daemon configuration unless the parent agent explicitly asks for it.
 If aiocs health is in doubt, run doctor before assuming the catalog is broken.

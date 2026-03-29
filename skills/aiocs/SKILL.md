@@ -1,6 +1,6 @@
 # aiocs
 
-Use this skill when you need authoritative local documentation search, inspection, refresh, or bootstrap through the shared `aiocs` catalog under `~/.aiocs`.
+Use this skill when you need authoritative local documentation search, inspection, safe refresh, or bootstrap through the shared `aiocs` catalog under `~/.aiocs`.
 
 ## When to use it
 
@@ -16,7 +16,11 @@ Use this skill when you need authoritative local documentation search, inspectio
 ## Trigger guidance for Codex
 
 - Prefer `aiocs` before live web browsing when the requested docs may already be in the local catalog.
+- Check `source_list` or scoped `search` before assuming a source is missing.
 - Use `aiocs` first for supported built-in sources and for any repo or machine that already relies on `~/.aiocs`.
+- If a source is missing, only add it when it is worth curating for future reuse.
+- Prefer `refresh due <source-id>` over force `fetch <source-id>` whenever freshness is the real goal.
+- Do not use `fetch all` as a normal answering path; reserve it for explicit user requests or maintenance flows.
 - Only fall back to live browsing when:
   - the source is not present in `aiocs`
   - the user explicitly wants the live site
@@ -51,10 +55,10 @@ Bootstrap the bundled built-in sources:
 docs --json init --no-fetch
 ```
 
-If the machine should be fully warm immediately, fetch during bootstrap:
+User-managed source specs live under:
 
 ```bash
-docs --json init --fetch
+~/.aiocs/sources
 ```
 
 ## Core commands
@@ -77,13 +81,19 @@ docs --json show 42
 Refresh the catalog:
 
 ```bash
-docs --json refresh due
-docs --json fetch hyperliquid
-docs --json fetch all
+docs --json source list
+docs --json refresh due hyperliquid
 docs --json canary hyperliquid
 docs --json embeddings status
 docs --json embeddings backfill all
 docs --json embeddings run
+```
+
+Force fetch is still available for explicit maintenance:
+
+```bash
+docs --json fetch hyperliquid
+docs --json fetch all
 ```
 
 Inspect what changed between snapshots:
@@ -142,19 +152,22 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 ## Recommended Codex workflow
 
 1. If runtime health or freshness is in doubt, run `doctor`.
-2. If the source may not be installed locally yet, run `source_list` or `init`.
-3. Use `search` in `auto` mode first, then `show` for the selected chunk.
-4. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
-5. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
+2. Run `source_list` to see whether the source already exists and whether it is due.
+3. If the source exists and is due, prefer `refresh due <source-id>` over force fetch.
+4. If the source is missing but likely to be reused, add a spec under `~/.aiocs/sources`, upsert it, then refresh only that source.
+5. Use `search` in `auto` mode first, then `show` for the selected chunk.
+6. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
+7. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
 
 ## Operational notes
 
 - The catalog is local-only and shared across projects on the same machine.
-- Default state root: `~/.aiocs/data` and `~/.aiocs/config`.
+- Default state root: `~/.aiocs/data`, `~/.aiocs/config`, and `~/.aiocs/sources`.
 - Use `docs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
 - `docs search --mode auto` is the right default for agents; it uses hybrid retrieval only when embeddings are current and healthy for the requested scope.
 - The Docker Compose stack includes a dedicated `aiocs-qdrant` container and expects Ollama to be reachable separately.
 - Canaries are the first place to look when a docs site changed and fetches started degrading.
+- Newly added or changed sources become due immediately, so `refresh due <source-id>` is the safe first refresh path after upsert.
 - CLI failures expose machine-readable `error.code` fields in `--json` mode.
 - MCP tool results use `{ ok, data?, error? }` envelopes, and `batch` can reduce multiple small MCP round trips.
 - For exact CLI payloads, see `/Users/jmucha/repos/mandex/aiocs/docs/json-contract.md`.

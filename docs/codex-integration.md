@@ -16,7 +16,7 @@ The `aiocs-mcp` process is an MCP stdio server, so running it directly will wait
 
 ```bash
 docs --json doctor
-docs --json init --fetch
+docs --json init --no-fetch
 ```
 
 ## How Codex should use aiocs
@@ -24,10 +24,12 @@ docs --json init --fetch
 1. Prefer `aiocs` before live browsing when the requested docs may already exist locally.
 2. Prefer MCP through `aiocs-mcp` when Codex can use it.
 3. Fall back to `docs --json ...` only when MCP is unavailable.
-4. Default to `search mode=auto`.
-5. Use `mode=lexical` for exact identifiers, endpoint names, headings, and error strings.
-6. Use MCP `batch` when multiple list/search/show or search/diff/coverage steps are needed.
-7. Cite `sourceId`, `snapshotId`, and `pageUrl` when they materially improve traceability.
+4. Check `source_list` before assuming a source is missing or stale.
+5. Default to `search mode=auto`.
+6. Use `mode=lexical` for exact identifiers, endpoint names, headings, and error strings.
+7. Prefer `refresh due <source-id>` over force `fetch <source-id>` when the source already exists.
+8. Use MCP `batch` when multiple list/search/show or search/diff/coverage steps are needed.
+9. Cite `sourceId`, `snapshotId`, and `pageUrl` when they materially improve traceability.
 
 ## Automatic use in Codex
 
@@ -66,14 +68,25 @@ Health and bootstrap:
 
 ```bash
 docs --json doctor
-docs --json init --fetch
+docs --json init --no-fetch
 ```
 
 Local docs lookup:
 
 ```bash
+docs --json source list
 docs --json search "maker flow" --source hyperliquid --mode auto
 docs --json show 42
+```
+
+Missing or stale sources:
+
+```bash
+# user-managed source specs live here
+~/.aiocs/sources
+
+docs --json source upsert ~/.aiocs/sources/my-source.yaml
+docs --json refresh due my-source
 ```
 
 Drift, change, and completeness:
@@ -87,7 +100,7 @@ docs --json verify coverage hyperliquid /absolute/path/to/reference.md
 Catalog maintenance:
 
 ```bash
-docs --json refresh due
+docs --json refresh due hyperliquid
 docs --json embeddings status
 docs --json backup export /absolute/path/to/backup
 ```
@@ -98,12 +111,15 @@ If a Codex agent has access to the `aiocs-mcp` server, prefer these MCP tools ov
 
 - `doctor`
 - `init`
+- `source_list`
+- `source_upsert`
 - `search`
 - `show`
 - `canary`
+- `refresh_due`
 - `diff_snapshots`
 - `verify_coverage`
 - `embeddings_status`
 - `batch`
 
-The CLI remains the fallback and should always be invoked with `--json` for agent use.
+The CLI remains the fallback and should always be invoked with `--json` for agent use. For normal answering flows, avoid `fetch all`; use targeted due refresh or explicit user-approved force fetches.

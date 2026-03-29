@@ -50,8 +50,11 @@ const doctorReportSchema = z.object({
 const sourceSchema = z.object({
   id: z.string(),
   label: z.string(),
+  specPath: z.string().nullable(),
   nextDueAt: z.string(),
+  isDue: z.boolean(),
   nextCanaryDueAt: z.string().nullable(),
+  isCanaryDue: z.boolean(),
   lastCheckedAt: z.string().nullable(),
   lastSuccessfulSnapshotAt: z.string().nullable(),
   lastSuccessfulSnapshotId: z.string().nullable(),
@@ -195,7 +198,7 @@ const server = new McpServer({
   version: packageVersion,
   title: 'aiocs MCP server',
 }, {
-  instructions: `${packageDescription} Prefer these tools before live browsing when supported or already-fetched docs may exist locally. Use search mode auto by default, lexical for exact identifiers, and batch to reduce repeated round trips. When citing results, prefer sourceId, snapshotId, and pageUrl.`,
+  instructions: `${packageDescription} Prefer these tools before live browsing when supported or already-fetched docs may exist locally. Check source_list before assuming a source is missing or stale. Use search mode auto by default, lexical for exact identifiers, and refresh_due for targeted freshness checks before force fetch. Avoid fetch all as a normal answering path, use batch to reduce repeated round trips, and cite sourceId, snapshotId, and pageUrl when returning results.`,
 });
 
 const toolInputSchemas = new Map<string, z.ZodTypeAny | undefined>();
@@ -255,7 +258,7 @@ const toolHandlers: Record<string, ToolHandler> = {
   source_list: async () => listSources(),
   fetch: async (args = {}) => fetchSources(args.sourceIdOrAll as string),
   canary: async (args = {}) => runSourceCanaries(args.sourceIdOrAll as string),
-  refresh_due: async () => refreshDueSources(),
+  refresh_due: async (args = {}) => refreshDueSources((args.sourceIdOrAll as string | undefined) ?? 'all'),
   snapshot_list: async (args = {}) => listSnapshotsForSource(args.sourceId as string),
   diff_snapshots: async (args = {}) => diffSnapshotsForSource({
     sourceId: args.sourceId as string,
@@ -402,6 +405,7 @@ registerAiocsTool(
     }),
     outputSchema: z.object({
       sourceSpecDir: z.string(),
+      userSourceDir: z.string(),
       fetched: z.boolean(),
       initializedSources: z.array(z.object({
         sourceId: z.string(),
@@ -474,7 +478,10 @@ registerAiocsTool(
   'refresh_due',
   {
     title: 'Refresh due',
-    description: 'Fetch all sources whose schedule is currently due.',
+    description: 'Fetch all due sources, or refresh one specific source only if it is currently due.',
+    inputSchema: z.object({
+      sourceIdOrAll: z.string().optional(),
+    }),
     outputSchema: z.object({
       results: z.array(fetchResultSchema),
     }),

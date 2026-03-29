@@ -689,7 +689,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         } | undefined;
       const resolvedSpecPath = options?.specPath ? resolve(options.specPath) : null;
       const nextDueAt = !existing
-        ? addHoursIso(spec.schedule.everyHours)
+        ? timestamp
         : existing.config_hash === configHash
           ? existing.next_due_at
           : timestamp;
@@ -749,8 +749,11 @@ export function openCatalog(options: OpenCatalogOptions) {
     listSources(): Array<{
       id: string;
       label: string;
+      specPath: string | null;
       nextDueAt: string;
+      isDue: boolean;
       nextCanaryDueAt: string | null;
+      isCanaryDue: boolean;
       lastCheckedAt: string | null;
       lastSuccessfulSnapshotAt: string | null;
       lastSuccessfulSnapshotId: string | null;
@@ -762,6 +765,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         SELECT
           id,
           label,
+          spec_path,
           next_due_at,
           next_canary_due_at,
           last_checked_at,
@@ -775,6 +779,7 @@ export function openCatalog(options: OpenCatalogOptions) {
       `).all() as Array<{
         id: string;
         label: string;
+        spec_path: string | null;
         next_due_at: string;
         next_canary_due_at: string | null;
         last_checked_at: string | null;
@@ -788,8 +793,11 @@ export function openCatalog(options: OpenCatalogOptions) {
       return rows.map((row) => ({
         id: row.id,
         label: row.label,
+        specPath: row.spec_path,
         nextDueAt: row.next_due_at,
+        isDue: Date.parse(row.next_due_at) <= Date.now(),
         nextCanaryDueAt: row.next_canary_due_at,
+        isCanaryDue: row.next_canary_due_at ? Date.parse(row.next_canary_due_at) <= Date.now() : false,
         lastCheckedAt: row.last_checked_at,
         lastSuccessfulSnapshotAt: row.last_successful_snapshot_at,
         lastSuccessfulSnapshotId: row.last_successful_snapshot_id,

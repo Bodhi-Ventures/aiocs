@@ -111,7 +111,6 @@ Bootstrap them in one command:
 
 ```bash
 docs init --no-fetch
-docs init --fetch
 docs --json init --no-fetch
 ```
 
@@ -127,6 +126,9 @@ docs --json doctor
 Register a source:
 
 ```bash
+mkdir -p ~/.aiocs/sources
+cp /path/to/source.yaml ~/.aiocs/sources/my-source.yaml
+pnpm dev -- source upsert ~/.aiocs/sources/my-source.yaml
 pnpm dev -- source upsert /path/to/source.yaml
 pnpm dev -- source list
 ```
@@ -134,9 +136,16 @@ pnpm dev -- source list
 Fetch and snapshot docs:
 
 ```bash
-pnpm dev -- fetch hyperliquid
+pnpm dev -- refresh due hyperliquid
 pnpm dev -- snapshot list hyperliquid
 pnpm dev -- refresh due
+```
+
+Force fetch remains available for explicit maintenance:
+
+```bash
+pnpm dev -- fetch hyperliquid
+pnpm dev -- fetch all
 ```
 
 Link docs to a local project:
@@ -166,6 +175,13 @@ pnpm dev -- verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
+
+For agents, the intended decision order is:
+
+1. check `source list` or scoped `search` first
+2. if the source exists and is due, run `refresh due <source-id>`
+3. if the source is missing but worth reusing, add a spec under `~/.aiocs/sources`, then upsert and refresh only that source
+4. avoid `fetch all` unless the user explicitly asks or the daemon is doing maintenance
 
 ### Hybrid search
 
@@ -253,8 +269,9 @@ Representative examples:
 ```bash
 pnpm dev -- --json doctor
 pnpm dev -- --json init --no-fetch
+pnpm dev -- --json source list
 pnpm dev -- --json source upsert sources/hyperliquid.yaml
-pnpm dev -- --json fetch hyperliquid
+pnpm dev -- --json refresh due hyperliquid
 pnpm dev -- --json canary hyperliquid
 pnpm dev -- --json refresh due
 pnpm dev -- --json diff hyperliquid
@@ -315,7 +332,7 @@ Environment variables:
   - accepted values: `true`, `false`, `1`, `0`, `yes`, `no`, `on`, `off`
 - `AIOCS_SOURCE_SPEC_DIRS`
   - comma-separated list of source spec directories
-  - defaults to the bundled `sources/` path, plus `/app/sources` inside Docker when present
+  - defaults to `~/.aiocs/sources`, the bundled `sources/` path, plus `/app/sources` inside Docker when present
 
 For local agents, the daemon keeps the shared catalog under `~/.aiocs` warm while agents continue to use the normal CLI with `--json`.
 

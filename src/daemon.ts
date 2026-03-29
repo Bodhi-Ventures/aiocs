@@ -6,6 +6,7 @@ import { fetchSource, runSourceCanary } from './fetch/fetch-source.js';
 import { processEmbeddingJobs } from './hybrid/worker.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
+import { getAiocsSourcesDir } from './runtime/paths.js';
 import { getHybridRuntimeConfig } from './runtime/hybrid-config.js';
 import { pathExists, uniqueResolvedPaths, walkSourceSpecFiles } from './spec/source-spec-files.js';
 
@@ -116,6 +117,7 @@ export type DaemonLogger = {
 type ParseDaemonConfigOptions = {
   bundledSourceDir?: string;
   containerSourceDir?: string;
+  userSourceDir?: string;
 };
 
 type BootstrapSourceSpecsInput = {
@@ -182,8 +184,9 @@ export function parseDaemonConfig(
     : true;
 
   const defaultSourceDirs = uniqueResolvedPaths([
-    options.containerSourceDir ?? DEFAULT_CONTAINER_SOURCE_DIR,
     options.bundledSourceDir ?? getBundledSourcesDir(),
+    options.userSourceDir ?? getAiocsSourcesDir(env),
+    options.containerSourceDir ?? DEFAULT_CONTAINER_SOURCE_DIR,
   ]);
 
   const sourceSpecDirs = env.AIOCS_SOURCE_SPEC_DIRS

@@ -11,7 +11,7 @@ import { fetchSource, runSourceCanary } from './fetch/fetch-source.js';
 import { AiocsVectorStore } from './hybrid/qdrant.js';
 import { searchHybridCatalog } from './hybrid/search.js';
 import { processEmbeddingJobs } from './hybrid/worker.js';
-import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
+import { getAiocsConfigDir, getAiocsDataDir, getAiocsSourcesDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config.js';
 import { loadSourceSpec } from './spec/source-spec.js';
@@ -65,8 +65,11 @@ export async function listSources(): Promise<{
   sources: Array<{
     id: string;
     label: string;
+    specPath: string | null;
     nextDueAt: string;
+    isDue: boolean;
     nextCanaryDueAt: string | null;
+    isCanaryDue: boolean;
     lastCheckedAt: string | null;
     lastSuccessfulSnapshotAt: string | null;
     lastSuccessfulSnapshotId: string | null;
@@ -117,7 +120,7 @@ export async function fetchSources(sourceIdOrAll: string): Promise<{
   return { results };
 }
 
-export async function refreshDueSources(): Promise<{
+export async function refreshDueSources(sourceIdOrAll = 'all'): Promise<{
   results: Array<{
     sourceId: string;
     snapshotId: string;
@@ -126,7 +129,19 @@ export async function refreshDueSources(): Promise<{
   }>;
 }> {
   const results = await withCatalog(async ({ catalog, dataDir }) => {
-    const dueIds = catalog.listDueSourceIds();
+    const dueIds = sourceIdOrAll === 'all'
+      ? catalog.listDueSourceIds()
+      : (() => {
+          const spec = catalog.getSourceSpec(sourceIdOrAll);
+          if (!spec) {
+            throw new AiocsError(
+              AIOCS_ERROR_CODES.sourceNotFound,
+              `Unknown source '${sourceIdOrAll}'`,
+            );
+          }
+
+          return catalog.listDueSourceIds().includes(sourceIdOrAll) ? [sourceIdOrAll] : [];
+        })();
     const fetched = [];
 
     for (const sourceId of dueIds) {
@@ -370,6 +385,7 @@ export async function initBuiltInSources(options?: {
   sourceSpecDir?: string;
 }): Promise<{
   sourceSpecDir: string;
+  userSourceDir: string;
   fetched: boolean;
   initializedSources: Array<{
     sourceId: string;
@@ -387,6 +403,7 @@ export async function initBuiltInSources(options?: {
 }> {
   const sourceSpecDir = options?.sourceSpecDir ?? getBundledSourcesDir();
   const fetched = options?.fetch ?? false;
+  const userSourceDir = getAiocsSourcesDir();
 
   return withCatalog(async ({ catalog, dataDir }) => {
     const bootstrapped = await bootstrapSourceSpecs({
@@ -418,12 +435,23 @@ export async function initBuiltInSources(options?: {
 
     return {
       sourceSpecDir,
+      userSourceDir,
       fetched,
       initializedSources: bootstrapped.sources,
       removedSourceIds: bootstrapped.removedSourceIds,
       fetchResults,
     };
   });
+}
+
+export function getManagedSourceSpecDirectories(): {
+  bundledSourceDir: string;
+  userSourceDir: string;
+} {
+  return {
+    bundledSourceDir: getBundledSourcesDir(),
+    userSourceDir: getAiocsSourcesDir(),
+  };
 }
 
 export function getDoctorReport(env: NodeJS.ProcessEnv = process.env): Promise<DoctorReport> {

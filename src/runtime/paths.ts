@@ -35,3 +35,15 @@ export function getAiocsConfigDir(env: NodeJS.ProcessEnv = process.env): string 
   mkdirSync(target, { recursive: true });
   return target;
 }
+
+export function getAiocsSourcesDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.AIOCS_SOURCES_DIR;
+  if (override) {
+    mkdirSync(expandTilde(override), { recursive: true });
+    return expandTilde(override);
+  }
+
+  const target = join(homedir(), '.aiocs', 'sources');
+  mkdirSync(target, { recursive: true });
+  return target;
+}

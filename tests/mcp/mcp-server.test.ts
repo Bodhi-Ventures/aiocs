@@ -142,6 +142,7 @@ schedule:
         },
       });
       expect(toolData<{ initializedSources: Array<{ sourceId: string }> }>(init)).toMatchObject({
+        userSourceDir: expect.stringContaining('.aiocs/sources'),
         initializedSources: expect.arrayContaining([
           expect.objectContaining({ sourceId: 'ethereal' }),
           expect.objectContaining({ sourceId: 'hyperliquid' }),
@@ -161,6 +162,28 @@ schedule:
         sourceId: 'mcp-selector',
       });
 
+      const sourceList = await client.callTool({
+        name: 'source_list',
+        arguments: {},
+      });
+      expect(toolData<{
+        sources: Array<{
+          id: string;
+          specPath: string | null;
+          isDue: boolean;
+          isCanaryDue: boolean;
+        }>;
+      }>(sourceList)).toMatchObject({
+        sources: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'mcp-selector',
+            specPath,
+            isDue: true,
+            isCanaryDue: true,
+          }),
+        ]),
+      });
+
       const link = await client.callTool({
         name: 'project_link',
         arguments: {
@@ -173,19 +196,29 @@ schedule:
         sourceIds: ['mcp-selector'],
       });
 
-      const fetch = await client.callTool({
-        name: 'fetch',
+      const refreshDue = await client.callTool({
+        name: 'refresh_due',
         arguments: {
           sourceIdOrAll: 'mcp-selector',
         },
       });
-      expect(toolData<{ results: Array<{ sourceId: string; pageCount: number }> }>(fetch)).toMatchObject({
+      expect(toolData<{ results: Array<{ sourceId: string; pageCount: number }> }>(refreshDue)).toMatchObject({
         results: [
           expect.objectContaining({
             sourceId: 'mcp-selector',
             pageCount: 2,
           }),
         ],
+      });
+
+      const refreshDueAgain = await client.callTool({
+        name: 'refresh_due',
+        arguments: {
+          sourceIdOrAll: 'mcp-selector',
+        },
+      });
+      expect(toolData<{ results: Array<unknown> }>(refreshDueAgain)).toEqual({
+        results: [],
       });
 
       const search = await client.callTool({

@@ -71,13 +71,14 @@ describe('daemon runtime', () => {
     const config = parseDaemonConfig({}, {
       bundledSourceDir: '/repo/aiocs/sources',
       containerSourceDir: '/app/sources',
+      userSourceDir: '/Users/test/.aiocs/sources',
     });
 
     expect(config).toEqual({
       intervalMinutes: 60,
       fetchOnStart: true,
       strictSourceSpecDirs: false,
-      sourceSpecDirs: ['/app/sources', '/repo/aiocs/sources'],
+      sourceSpecDirs: ['/repo/aiocs/sources', '/Users/test/.aiocs/sources', '/app/sources'],
     });
   });
 
@@ -94,6 +95,7 @@ describe('daemon runtime', () => {
     }, {
       bundledSourceDir: '/repo/aiocs/sources',
       containerSourceDir: '/app/sources',
+      userSourceDir: '/Users/test/.aiocs/sources',
     });
 
     expect(config.fetchOnStart).toBe(false);
@@ -134,6 +136,53 @@ describe('daemon runtime', () => {
       expect(catalog.listSources()).toEqual([
         expect.objectContaining({
           id: 'daemon-bootstrap',
+        }),
+      ]);
+    } finally {
+      catalog.close();
+      await server.close();
+    }
+  });
+
+  it('lets user-managed source specs override bundled defaults with the same source id', async () => {
+    const server = await startDocsServer();
+    const bundledDir = join(root, 'bundled');
+    const userDir = join(root, 'user');
+    const dataDir = join(root, 'data');
+    mkdirSync(bundledDir, { recursive: true });
+    mkdirSync(userDir, { recursive: true });
+
+    writeSelectorSpecAtPath(
+      join(bundledDir, 'shared-source.yaml'),
+      server.baseUrl,
+      'shared-source',
+      24,
+      '/selector/start',
+    );
+    writeSelectorSpecAtPath(
+      join(userDir, 'shared-source.yaml'),
+      server.baseUrl,
+      'shared-source',
+      24,
+      '/selector-v2/start',
+    );
+
+    const catalog = openCatalog({ dataDir });
+
+    try {
+      const result = await bootstrapSourceSpecs({
+        catalog,
+        sourceSpecDirs: [bundledDir, userDir],
+      });
+
+      expect(result.processedSpecCount).toBe(2);
+      expect(catalog.getSourceSpec('shared-source')).toMatchObject({
+        startUrls: [`${server.baseUrl}/selector-v2/start`],
+      });
+      expect(catalog.listSources()).toEqual([
+        expect.objectContaining({
+          id: 'shared-source',
+          specPath: join(userDir, 'shared-source.yaml'),
         }),
       ]);
     } finally {

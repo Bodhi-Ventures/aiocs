@@ -99,6 +99,7 @@ describe('CLI commands', () => {
         command: 'init',
         data: {
           fetched: false,
+          userSourceDir: expect.stringContaining('.aiocs/sources'),
           initializedSources: [
             expect.objectContaining({ sourceId: 'ethereal' }),
             expect.objectContaining({ sourceId: 'hyperliquid' }),
@@ -302,24 +303,27 @@ schedule:
 
         const sourceList = await runCli(runtime, ['--json', 'source', 'list'], { cwd: root, env });
         expect(sourceList.exitCode).toBe(0);
-        expect(parseJsonEnvelope(sourceList.stdout)).toMatchObject({
-          ok: true,
-          command: 'source.list',
-          data: {
-            sources: [
-              expect.objectContaining({
-                id: 'selector-json',
-                label: 'Selector JSON',
-              }),
-            ],
-          },
-        });
+      expect(parseJsonEnvelope(sourceList.stdout)).toMatchObject({
+        ok: true,
+        command: 'source.list',
+        data: {
+          sources: [
+            expect.objectContaining({
+              id: 'selector-json',
+              label: 'Selector JSON',
+              specPath,
+              isDue: true,
+              isCanaryDue: true,
+            }),
+          ],
+        },
+      });
 
-        const fetch = await runCli(runtime, ['--json', 'fetch', 'selector-json'], { cwd: root, env });
-        expect(fetch.exitCode).toBe(0);
-        expect(parseJsonEnvelope(fetch.stdout)).toMatchObject({
+        const refreshDue = await runCli(runtime, ['--json', 'refresh', 'due', 'selector-json'], { cwd: root, env });
+        expect(refreshDue.exitCode).toBe(0);
+        expect(parseJsonEnvelope(refreshDue.stdout)).toMatchObject({
           ok: true,
-          command: 'fetch',
+          command: 'refresh.due',
           data: {
             results: [
               expect.objectContaining({
@@ -330,7 +334,7 @@ schedule:
           },
         });
 
-        const refresh = await runCli(runtime, ['--json', 'refresh', 'due'], { cwd: root, env });
+        const refresh = await runCli(runtime, ['--json', 'refresh', 'due', 'selector-json'], { cwd: root, env });
         expect(refresh.exitCode).toBe(0);
         expect(parseJsonEnvelope(refresh.stdout)).toMatchObject({
           ok: true,

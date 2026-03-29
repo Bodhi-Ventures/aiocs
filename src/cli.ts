@@ -41,6 +41,7 @@ import {
   upsertSourceFromSpecFile,
   verifyCoverage,
   refreshDueSources,
+  getManagedSourceSpecDirectories,
 } from './services.js';
 
 type CommandResult<TData> = {
@@ -290,6 +291,7 @@ program
         data: result,
         human: [
           `Initialized ${result.initializedSources.length} built-in sources from ${result.sourceSpecDir}`,
+          `User-managed source specs live under ${getManagedSourceSpecDirectories().userSourceDir}`,
           ...(result.removedSourceIds.length > 0
             ? [`Removed managed sources: ${result.removedSourceIds.join(', ')}`]
             : []),
@@ -349,7 +351,8 @@ source
           : sources.map((item) => [
             item.id,
             item.label,
-            `next due ${item.nextDueAt}`,
+            item.isDue ? 'due now' : `next due ${item.nextDueAt}`,
+            `spec ${item.specPath ?? '(inline/unknown)'}`,
             item.lastSuccessfulSnapshotId ? `latest ${item.lastSuccessfulSnapshotId}` : 'no snapshots',
           ].join(' | ')),
       };
@@ -397,15 +400,19 @@ program
 const refresh = program.command('refresh');
 refresh
   .command('due')
-  .action(async (_options: unknown, command: Command) => {
+  .argument('[source-id-or-all]')
+  .description('Refresh all due sources, or refresh one specific source only if it is currently due.')
+  .action(async (sourceIdOrAll: string | undefined, _options: unknown, command: Command) => {
     await executeCommand(command, 'refresh.due', async () => {
-      const result = await refreshDueSources();
+      const result = await refreshDueSources(sourceIdOrAll ?? 'all');
       const results = result.results;
 
       return {
         data: result,
         human: results.length === 0
-          ? 'No sources due for refresh.'
+          ? sourceIdOrAll && sourceIdOrAll !== 'all'
+            ? `Source ${sourceIdOrAll} is not due for refresh.`
+            : 'No sources due for refresh.'
           : results.map((result) => {
             const verb = result.reused ? 'Reused' : 'Fetched';
             return `${verb} ${result.sourceId} -> ${result.snapshotId} (${result.pageCount} pages)`;
