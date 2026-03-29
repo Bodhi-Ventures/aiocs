@@ -12,6 +12,13 @@ docs --version
 command -v aiocs-mcp
 ```
 
+If global install is unavailable, use `npx` only as a fallback:
+
+```bash
+npx -y -p @bodhi-ventures/aiocs docs --version
+npx -y -p @bodhi-ventures/aiocs aiocs-mcp
+```
+
 The `aiocs-mcp` process is an MCP stdio server, so running it directly will wait for MCP clients instead of printing interactive help. The useful validation commands are:
 
 ```bash
@@ -49,12 +56,12 @@ Once that symlink exists, Codex can load the `aiocs` skill directly from the glo
 
 There are two supported subagent patterns:
 
-- Repo example for development and debugging:
-  [`docs/examples/codex-agents/aiocs-docs-specialist.example.toml`](examples/codex-agents/aiocs-docs-specialist.example.toml)
+- Repo-managed agent definition:
+  [`agents/aiocs-docs-specialist.toml`](../agents/aiocs-docs-specialist.toml)
 - Install-ready global agent definition:
   `ai-skills/agents/aiocs-docs-specialist.toml` from your local `ai-skills` checkout
 
-The repo example and the install-ready global agent both point at the globally installed `aiocs-mcp` binary so Codex uses the published package by default.
+The repo-managed agent definition and the install-ready global agent both point at the globally installed `aiocs-mcp` binary so Codex uses the published package by default.
 
 To expose the install-ready global agent to Codex on this machine:
 

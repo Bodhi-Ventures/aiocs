@@ -34,6 +34,13 @@ docs --help
 command -v aiocs-mcp
 ```
 
+Zero-install fallback:
+
+```bash
+npx -y -p @bodhi-ventures/aiocs docs --version
+npx -y -p @bodhi-ventures/aiocs aiocs-mcp
+```
+
 For repository development only:
 
 ```bash
@@ -49,9 +56,9 @@ For AI agents, prefer the root-level `--json` flag for one-shot commands:
 docs --json version
 docs --json doctor
 docs --json init --no-fetch
-pnpm dev -- --json source list
-pnpm dev -- --json search "maker flow" --source hyperliquid
-pnpm dev -- --json show 42
+docs --json source list
+docs --json search "maker flow" --source hyperliquid
+docs --json show 42
 ```
 
 `--json` emits exactly one JSON document to stdout with this envelope:
@@ -101,7 +108,7 @@ GitHub Actions publishes `@bodhi-ventures/aiocs` publicly to npm and creates the
 
 ## Codex integration
 
-For Codex-first setup, automatic-use guidance, MCP recommendations, and subagent examples, see [docs/codex-integration.md](./docs/codex-integration.md).
+For Codex-first setup, automatic-use guidance, MCP recommendations, and agent definitions, see [docs/codex-integration.md](./docs/codex-integration.md).
 
 ## Managed sources
 
@@ -132,50 +139,50 @@ Register a source:
 ```bash
 mkdir -p ~/.aiocs/sources
 cp /path/to/source.yaml ~/.aiocs/sources/my-source.yaml
-pnpm dev -- source upsert ~/.aiocs/sources/my-source.yaml
-pnpm dev -- source upsert /path/to/source.yaml
-pnpm dev -- source list
+docs source upsert ~/.aiocs/sources/my-source.yaml
+docs source upsert /path/to/source.yaml
+docs source list
 ```
 
 Fetch and snapshot docs:
 
 ```bash
-pnpm dev -- refresh due hyperliquid
-pnpm dev -- snapshot list hyperliquid
-pnpm dev -- refresh due
+docs refresh due hyperliquid
+docs snapshot list hyperliquid
+docs refresh due
 ```
 
 Force fetch remains available for explicit maintenance:
 
 ```bash
-pnpm dev -- fetch hyperliquid
-pnpm dev -- fetch all
+docs fetch hyperliquid
+docs fetch all
 ```
 
 Link docs to a local project:
 
 ```bash
-pnpm dev -- project link /absolute/path/to/project hyperliquid lighter
-pnpm dev -- project unlink /absolute/path/to/project lighter
+docs project link /absolute/path/to/project hyperliquid lighter
+docs project unlink /absolute/path/to/project lighter
 ```
 
 Search and inspect results:
 
 ```bash
-pnpm dev -- search "maker flow" --source hyperliquid
-pnpm dev -- search "maker flow" --source hyperliquid --mode lexical
-pnpm dev -- search "maker flow" --source hyperliquid --mode hybrid
-pnpm dev -- search "maker flow" --source hyperliquid --mode semantic
-pnpm dev -- search "maker flow" --all
-pnpm dev -- search "maker flow" --source hyperliquid --limit 5 --offset 0
-pnpm dev -- show 42
-pnpm dev -- canary hyperliquid
-pnpm dev -- diff hyperliquid
-pnpm dev -- embeddings status
-pnpm dev -- embeddings backfill all
-pnpm dev -- embeddings run
-pnpm dev -- backup export /absolute/path/to/backup
-pnpm dev -- verify coverage hyperliquid /absolute/path/to/reference.md
+docs search "maker flow" --source hyperliquid
+docs search "maker flow" --source hyperliquid --mode lexical
+docs search "maker flow" --source hyperliquid --mode hybrid
+docs search "maker flow" --source hyperliquid --mode semantic
+docs search "maker flow" --all
+docs search "maker flow" --source hyperliquid --limit 5 --offset 0
+docs show 42
+docs canary hyperliquid
+docs diff hyperliquid
+docs embeddings status
+docs embeddings backfill all
+docs embeddings run
+docs backup export /absolute/path/to/backup
+docs verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
@@ -271,22 +278,22 @@ All one-shot commands support `--json`:
 Representative examples:
 
 ```bash
-pnpm dev -- --json doctor
-pnpm dev -- --json init --no-fetch
-pnpm dev -- --json source list
-pnpm dev -- --json source upsert sources/hyperliquid.yaml
-pnpm dev -- --json refresh due hyperliquid
-pnpm dev -- --json canary hyperliquid
-pnpm dev -- --json refresh due
-pnpm dev -- --json diff hyperliquid
-pnpm dev -- --json embeddings status
-pnpm dev -- --json embeddings backfill all
-pnpm dev -- --json embeddings clear hyperliquid
-pnpm dev -- --json embeddings run
-pnpm dev -- --json project link /absolute/path/to/project hyperliquid lighter
-pnpm dev -- --json snapshot list hyperliquid
-pnpm dev -- --json backup export /absolute/path/to/backup
-pnpm dev -- --json verify coverage hyperliquid /absolute/path/to/reference.md
+docs --json doctor
+docs --json init --no-fetch
+docs --json source list
+docs --json source upsert sources/hyperliquid.yaml
+docs --json refresh due hyperliquid
+docs --json canary hyperliquid
+docs --json refresh due
+docs --json diff hyperliquid
+docs --json embeddings status
+docs --json embeddings backfill all
+docs --json embeddings clear hyperliquid
+docs --json embeddings run
+docs --json project link /absolute/path/to/project hyperliquid lighter
+docs --json snapshot list hyperliquid
+docs --json backup export /absolute/path/to/backup
+docs --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 For multi-result commands like `fetch`, `refresh due`, and `search`, `data` contains structured collections rather than line-by-line output:

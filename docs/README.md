@@ -9,4 +9,4 @@ Good candidates:
 - operational runbooks
 - decisions worth preserving across sessions
 - Codex integration guidance in `codex-integration.md`
-- reusable agent examples under `examples/codex-agents/`
+- reusable repo-managed agent definitions under `../agents/`
