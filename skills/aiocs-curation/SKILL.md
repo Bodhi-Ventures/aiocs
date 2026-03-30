@@ -1,3 +1,8 @@
+---
+name: aiocs-curation
+description: Use when aiocs sources or snapshots need mutation, such as source onboarding, targeted refresh, canary remediation, or catalog repair.
+---
+
 # aiocs-curation
 
 Use this skill when you need to add, refresh, repair, or otherwise mutate `aiocs` sources under `~/.aiocs`.

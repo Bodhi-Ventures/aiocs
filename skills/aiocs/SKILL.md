@@ -1,3 +1,8 @@
+---
+name: aiocs
+description: Use when authoritative local documentation lookup should come from the shared aiocs catalog under ~/.aiocs instead of live browsing.
+---
+
 # aiocs
 
 Use this skill when you need authoritative local documentation lookup through the shared `aiocs` catalog under `~/.aiocs`.
