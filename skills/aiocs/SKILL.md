@@ -1,30 +1,25 @@
 # aiocs
 
-Use this skill when you need authoritative local documentation search, inspection, safe refresh, or bootstrap through the shared `aiocs` catalog under `~/.aiocs`.
+Use this skill when you need authoritative local documentation lookup through the shared `aiocs` catalog under `~/.aiocs`.
 
 ## When to use it
 
 - The user is asking about exchange or product docs that may already exist in the local `aiocs` catalog.
 - You need authoritative local docs for an exchange, SDK, or product without browsing the live site every time.
-- You want machine-readable search/show results for an AI agent.
-- You need to detect source drift or compare snapshot changes over time.
-- You want hybrid docs retrieval with lexical plus semantic/vector recall.
-- You need to bootstrap or validate `aiocs` on a new machine.
-- You want to keep the local docs catalog warm through the `aiocs` daemon or MCP server.
-- You need to back up or restore the shared catalog.
+- You want machine-readable search/show/diff/coverage results for an AI agent.
+- You need hybrid docs retrieval with lexical plus semantic/vector recall.
+- You need to validate runtime health before relying on the local docs catalog.
 
 ## Trigger guidance for Codex
 
 - Prefer `aiocs` before live web browsing when the requested docs may already be in the local catalog.
 - Check `source_list` or scoped `search` before assuming a source is missing.
 - Use `aiocs` first for the bundled `hyperliquid` source and for any repo or machine that already relies on `~/.aiocs`.
-- If a source is missing, only add it when it is worth curating for future reuse.
-- Prefer `refresh due <source-id>` over force `fetch <source-id>` whenever freshness is the real goal.
-- Do not use `fetch all` as a normal answering path; reserve it for explicit user requests or maintenance flows.
+- This skill is the default read/search path. If the task requires source creation, force fetch, targeted refresh, or canary remediation, also load `aiocs-curation`.
 - Only fall back to live browsing when:
   - the source is not present in `aiocs`
   - the user explicitly wants the live site
-  - the local catalog is stale or broken and the answer cannot wait for refresh/canary remediation
+  - the local catalog is stale or broken and the answer cannot wait for curation/remediation
 - If you need multiple docs operations in MCP, use `batch` instead of many small round trips.
 
 ## Preferred interfaces
@@ -57,12 +52,6 @@ Bootstrap managed sources from the repo bundle and `~/.aiocs/sources`:
 docs --json init --no-fetch
 ```
 
-User-managed source specs live under:
-
-```bash
-~/.aiocs/sources
-```
-
 ## Core commands
 
 Search the shared catalog:
@@ -80,22 +69,12 @@ Inspect a specific chunk:
 docs --json show 42
 ```
 
-Refresh the catalog:
+Inspect source availability and health:
 
 ```bash
 docs --json source list
-docs --json refresh due hyperliquid
 docs --json canary hyperliquid
 docs --json embeddings status
-docs --json embeddings backfill all
-docs --json embeddings run
-```
-
-Force fetch is still available for explicit maintenance:
-
-```bash
-docs --json fetch hyperliquid
-docs --json fetch all
 ```
 
 Inspect what changed between snapshots:
@@ -131,11 +110,8 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `version`
 - `doctor`
 - `init`
-- `source_upsert`
 - `source_list`
 - `canary`
-- `fetch`
-- `refresh_due`
 - `snapshot_list`
 - `diff_snapshots`
 - `project_link`
@@ -151,15 +127,16 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `verify_coverage`
 - `batch`
 
+Mutation-capable MCP tools such as `source_upsert`, `refresh_due`, and `fetch` belong to `aiocs-curation`.
+
 ## Recommended Codex workflow
 
-1. If runtime health or freshness is in doubt, run `doctor`.
-2. Run `source_list` to see whether the source already exists and whether it is due.
-3. If the source exists and is due, prefer `refresh due <source-id>` over force fetch.
-4. If the source is missing but likely to be reused, add a spec under `~/.aiocs/sources`, upsert it, then refresh only that source.
-5. Use `search` in `auto` mode first, then `show` for the selected chunk.
-6. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
-7. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
+1. If runtime health is in doubt, run `doctor`.
+2. Run `source_list` to see whether the source already exists.
+3. Use `search` in `auto` mode first, then `show` for the selected chunk.
+4. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
+5. If the source is missing or stale and the next step is to mutate `aiocs`, load `aiocs-curation`.
+6. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
 
 ## Operational notes
 

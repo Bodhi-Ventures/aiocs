@@ -110,6 +110,13 @@ GitHub Actions publishes `@bodhi-ventures/aiocs` publicly to npm and creates the
 
 For Codex-first setup, automatic-use guidance, MCP recommendations, and agent definitions, see [docs/codex-integration.md](./docs/codex-integration.md).
 
+Canonical global setup:
+
+- register `aiocs-mcp` in `~/.codex/config.toml`
+- link `skills/aiocs` into `~/.codex/skills/aiocs`
+- link `skills/aiocs-curation` into `~/.codex/skills/aiocs-curation`
+- keep the optional specialist subagent linked only as a fallback for heavier docs workflows
+
 ## Managed sources
 
 The open-source repo bundles `hyperliquid` in `sources/`. Additional machine-local source specs

@@ -6,6 +6,7 @@ sandbox_mode = "read-only"
 nickname_candidates = ["Archive", "Beacon", "Index"]
 developer_instructions = """
 Use aiocs as the first stop for local documentation work.
+Use the aiocs skill for read/search flows and aiocs-curation only when the task requires source mutation or refresh.
 Prefer aiocs before live browsing when the requested docs may already exist in the local catalog.
 Check source presence and freshness with source_list before assuming docs are missing or stale.
 Default to search mode auto. Switch to lexical for exact identifiers, headings, endpoint names, and error strings.
