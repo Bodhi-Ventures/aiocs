@@ -223,24 +223,53 @@ These environment overrides apply at runtime, including for already-created work
 Create, bind, compile, and search a workspace:
 
 ```bash
-docs workspace create market-structure --label "Market Structure"
+docs workspace create market-structure --label "Market Structure" --auto-compile
 docs workspace bind market-structure hyperliquid nktkas-hyperliquid
 docs workspace compile market-structure
 docs workspace status market-structure
+docs workspace queue-run
 docs workspace search market-structure "transport and websocket design" --scope mixed
 docs workspace artifact list market-structure
 docs workspace artifact show market-structure derived/index.md
 docs workspace lint market-structure
 docs workspace output market-structure report --name weekly-brief
 docs workspace output market-structure slides --name weekly-brief
+docs workspace answer market-structure note "What changed in websocket transport?" --name websocket-note
 ```
 
-Workspace compile is incremental:
+Workspace compile and maintenance are incremental:
 
 - canonical source snapshots remain the source of truth
 - unchanged sources are skipped on later compiles
 - changed sources regenerate only their derived summaries/concepts plus the shared index
+- changed raw inputs regenerate only their derived summaries/concepts plus the shared index
 - generated reports/slides keep provenance to the bound source snapshots
+- generated notes/reports/slides are marked stale when their inputs change
+
+Opt-in automatic recompilation:
+
+- set `--auto-compile` when creating the workspace, or later with `docs workspace configure <workspace-id> --auto-compile true`
+- the daemon queues recompiles after bound source refreshes
+- run `docs workspace queue-run` to process queued jobs outside the daemon
+
+Workspace-scoped raw ingest:
+
+```bash
+docs workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
+docs workspace ingest add market-structure pdf /absolute/path/to/paper.pdf --label "Paper PDF"
+docs workspace ingest add market-structure image /absolute/path/to/diagram.png --label "Market diagram"
+docs workspace ingest list market-structure
+docs workspace ingest search market-structure "fee tier" --kind markdown-dir
+docs workspace ingest show market-structure markdown-dir-notes-<hash>
+```
+
+Obsidian sync:
+
+```bash
+docs workspace sync obsidian market-structure /absolute/path/to/obsidian-vault
+```
+
+The workspace is synced under `aiocs/<workspace-id>/` by default so the raw, derived, and output trees stay grouped inside the vault.
 
 If any bound source snapshot changes, rerun `docs workspace compile <workspace-id>` before `docs workspace output ...`. Output generation fails closed when required derived artifacts are stale.
 

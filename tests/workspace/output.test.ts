@@ -20,7 +20,8 @@ import { openCatalog } from '../../src/catalog/catalog.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../../src/errors.js';
 import { parseSourceSpecObject } from '../../src/spec/source-spec.js';
 import { compileWorkspace } from '../../src/workspace/compile.js';
-import { generateWorkspaceOutput } from '../../src/workspace/output.js';
+import { lintWorkspace } from '../../src/workspace/lint.js';
+import { answerWorkspaceQuestion, generateWorkspaceOutput } from '../../src/workspace/output.js';
 
 describe('workspace outputs', () => {
   let root: string;
@@ -233,6 +234,87 @@ describe('workspace outputs', () => {
           stale: true,
         }),
       );
+    } finally {
+      catalog.close();
+    }
+  });
+
+  it('answers a question from raw-input-only workspaces and stores note outputs', async () => {
+    const catalog = openCatalog({ dataDir: root });
+
+    try {
+      catalog.createWorkspace({
+        id: 'raw-answer',
+        label: 'Raw Answer Workspace',
+        compilerProfile: {
+          provider: 'lmstudio',
+          model: 'google/gemma-4-26b-a4b',
+          temperature: 0.1,
+          topP: 0.9,
+          maxInputChars: 12_000,
+          maxOutputTokens: 4_096,
+          concurrency: 1,
+        },
+        defaultOutputFormats: ['report'],
+      });
+      catalog.upsertWorkspaceRawInput({
+        id: 'paper-notes',
+        workspaceId: 'raw-answer',
+        kind: 'markdown-dir',
+        label: 'Paper Notes',
+        sourcePath: join(root, 'paper-notes'),
+        storagePath: 'raw/paper-notes',
+        contentHash: 'raw-hash',
+        metadata: {
+          absolutePath: join(root, 'paper-notes'),
+        },
+        chunks: [
+          {
+            sectionTitle: 'Paper',
+            markdown: '# Paper\n\nInteresting raw notes.',
+            filePath: 'paper.md',
+          },
+        ],
+      });
+
+      await compileWorkspace({
+        catalog,
+        dataDir: root,
+        workspaceId: 'raw-answer',
+      });
+
+      const note = await answerWorkspaceQuestion({
+        catalog,
+        dataDir: root,
+        workspaceId: 'raw-answer',
+        question: 'What is the key takeaway?',
+        format: 'note',
+        name: 'takeaway',
+      });
+
+      expect(note.path).toBe('derived/notes/takeaway.md');
+      expect(readFileSync(join(root, 'workspaces', 'raw-answer', note.path), 'utf8')).toContain('# Generated');
+      expect(catalog.getWorkspaceArtifact('raw-answer', note.path)).toEqual(
+        expect.objectContaining({
+          kind: 'note',
+        }),
+      );
+      expect(catalog.listWorkspaceArtifactRawInputProvenance('raw-answer', note.path)).toEqual([
+        expect.objectContaining({
+          rawInputId: 'paper-notes',
+        }),
+      ]);
+
+      const lintReport = await lintWorkspace({
+        catalog,
+        workspaceId: 'raw-answer',
+      });
+      expect(lintReport.findings).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'orphan-artifact',
+          artifactPath: note.path,
+        }),
+      ]));
     } finally {
       catalog.close();
     }

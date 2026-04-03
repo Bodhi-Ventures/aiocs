@@ -13,14 +13,28 @@ import { canonicalizeManagedSpecPath } from '../runtime/paths.js';
 import { parseSourceSpecObject, type SourceSpec } from '../spec/source-spec.js';
 import type {
   WorkspaceArtifactChunkInput,
+  WorkspaceArtifactLinkInput,
+  WorkspaceArtifactLinkRecord,
   WorkspaceArtifactKind,
   WorkspaceArtifactProvenanceInput,
+  WorkspaceArtifactRawInputProvenanceInput,
+  WorkspaceArtifactRawInputProvenanceRecord,
+  WorkspaceAnswerFormat,
   WorkspaceCompilerProfile,
+  WorkspaceCompileJobRecord,
+  WorkspaceCompileJobStatus,
   WorkspaceCompileRunRecord,
   WorkspaceCompileRunStatus,
+  WorkspaceHealthSummary,
   WorkspaceOutputFormat,
+  WorkspaceQuestionRunRecord,
+  WorkspaceRawInputChunkInput,
+  WorkspaceRawInputKind,
+  WorkspaceRawInputRecord,
   WorkspaceRecord,
   WorkspaceSourceBindingRecord,
+  WorkspaceSyncTargetKind,
+  WorkspaceSyncTargetRecord,
 } from '../workspace/types.js';
 
 type OpenCatalogOptions = {
@@ -98,6 +112,7 @@ type WorkspaceRow = {
   id: string;
   label: string;
   purpose: string | null;
+  auto_compile_enabled: number;
   compiler_profile_json: string;
   default_output_formats_json: string;
   created_at: string;
@@ -107,6 +122,20 @@ type WorkspaceRow = {
   last_compiled_at: string | null;
   binding_count: number;
   artifact_count: number;
+};
+
+type WorkspaceCompileJobRow = {
+  workspace_id: string;
+  status: WorkspaceCompileJobStatus;
+  requested_source_ids_json: string;
+  requested_raw_input_ids_json: string;
+  requested_fingerprint: string | null;
+  attempt_count: number;
+  created_at: string;
+  updated_at: string;
+  claimed_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
 };
 
 type WorkspaceSourceBindingRow = {
@@ -146,12 +175,90 @@ type WorkspaceArtifactProvenanceRow = {
   chunk_ids_json: string;
 };
 
+type WorkspaceArtifactRawInputProvenanceRow = {
+  workspace_id: string;
+  artifact_path: string;
+  raw_input_id: string;
+  chunk_ids_json: string;
+};
+
+type WorkspaceArtifactLinkRow = {
+  workspace_id: string;
+  from_path: string;
+  to_path: string;
+  relation_kind: string;
+  anchor_text: string | null;
+  source: 'deterministic' | 'compiler';
+  broken: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type WorkspaceRawInputRow = {
+  id: string;
+  workspace_id: string;
+  kind: WorkspaceRawInputKind;
+  label: string;
+  source_path: string;
+  storage_path: string;
+  extracted_text_path: string | null;
+  content_hash: string;
+  metadata_json: string;
+  created_at: string;
+  updated_at: string;
+  chunk_count: number;
+};
+
+type WorkspaceRawInputChunkRow = {
+  id: number;
+  workspace_id: string;
+  raw_input_id: string;
+  section_title: string;
+  markdown: string;
+  file_path: string | null;
+  score: number;
+};
+
+type WorkspaceSyncTargetRow = {
+  workspace_id: string;
+  kind: WorkspaceSyncTargetKind;
+  target_path: string;
+  export_subdir: string;
+  last_synced_at: string | null;
+  last_sync_status: 'success' | 'failed' | null;
+  last_error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type WorkspaceQuestionRunRow = {
+  id: string;
+  workspace_id: string;
+  question: string;
+  format: WorkspaceAnswerFormat;
+  artifact_path: string;
+  status: 'success' | 'failed';
+  error_message: string | null;
+  created_at: string;
+  completed_at: string;
+};
+
 type WorkspaceArtifactChunkSearchRow = {
   artifactPath: string;
   kind: WorkspaceArtifactKind;
   sectionTitle: string;
   markdown: string;
   stale: boolean;
+  score: number;
+};
+
+type WorkspaceRawInputSearchRow = {
+  rawInputId: string;
+  kind: WorkspaceRawInputKind;
+  label: string;
+  sectionTitle: string;
+  markdown: string;
+  filePath: string | null;
   score: number;
 };
 
@@ -360,6 +467,7 @@ function initSchema(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL,
       purpose TEXT,
+      auto_compile_enabled INTEGER NOT NULL DEFAULT 0 CHECK(auto_compile_enabled IN (0, 1)),
       compiler_profile_json TEXT NOT NULL,
       default_output_formats_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -386,6 +494,23 @@ function initSchema(db: Database.Database): void {
       started_at TEXT NOT NULL,
       finished_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS workspace_compile_jobs (
+      workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed')),
+      requested_source_ids_json TEXT NOT NULL,
+      requested_raw_input_ids_json TEXT NOT NULL,
+      requested_fingerprint TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      claimed_at TEXT,
+      completed_at TEXT,
+      error_message TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_compile_jobs_status_updated
+      ON workspace_compile_jobs(status, updated_at, workspace_id);
 
     CREATE TABLE IF NOT EXISTS workspace_artifacts (
       workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -450,11 +575,124 @@ function initSchema(db: Database.Database): void {
         ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS workspace_artifact_raw_input_provenance (
+      workspace_id TEXT NOT NULL,
+      artifact_path TEXT NOT NULL,
+      raw_input_id TEXT NOT NULL,
+      chunk_ids_json TEXT NOT NULL,
+      PRIMARY KEY(workspace_id, artifact_path, raw_input_id),
+      FOREIGN KEY(workspace_id, artifact_path)
+        REFERENCES workspace_artifacts(workspace_id, path)
+        ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_artifact_links (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      from_path TEXT NOT NULL,
+      to_path TEXT NOT NULL,
+      relation_kind TEXT NOT NULL,
+      anchor_text TEXT,
+      source TEXT NOT NULL CHECK(source IN ('deterministic', 'compiler')),
+      broken INTEGER NOT NULL DEFAULT 0 CHECK(broken IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(workspace_id, from_path, to_path, relation_kind, source)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_artifact_links_to_path
+      ON workspace_artifact_links(workspace_id, to_path, relation_kind);
+
+    CREATE TABLE IF NOT EXISTS workspace_raw_inputs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('markdown-dir', 'pdf', 'image')),
+      label TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      extracted_text_path TEXT,
+      content_hash TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_raw_input_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      raw_input_id TEXT NOT NULL REFERENCES workspace_raw_inputs(id) ON DELETE CASCADE,
+      section_title TEXT NOT NULL,
+      chunk_order INTEGER NOT NULL,
+      markdown TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      file_path TEXT
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS workspace_raw_input_chunks_fts USING fts5(
+      raw_input_id,
+      section_title,
+      markdown,
+      file_path,
+      content=workspace_raw_input_chunks,
+      content_rowid=id,
+      tokenize='porter unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS workspace_raw_input_chunks_ai AFTER INSERT ON workspace_raw_input_chunks BEGIN
+      INSERT INTO workspace_raw_input_chunks_fts(rowid, raw_input_id, section_title, markdown, file_path)
+      VALUES (new.id, new.raw_input_id, new.section_title, new.markdown, coalesce(new.file_path, ''));
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workspace_raw_input_chunks_ad AFTER DELETE ON workspace_raw_input_chunks BEGIN
+      INSERT INTO workspace_raw_input_chunks_fts(workspace_raw_input_chunks_fts, rowid, raw_input_id, section_title, markdown, file_path)
+      VALUES ('delete', old.id, old.raw_input_id, old.section_title, old.markdown, coalesce(old.file_path, ''));
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS workspace_raw_input_chunks_au AFTER UPDATE ON workspace_raw_input_chunks BEGIN
+      INSERT INTO workspace_raw_input_chunks_fts(workspace_raw_input_chunks_fts, rowid, raw_input_id, section_title, markdown, file_path)
+      VALUES ('delete', old.id, old.raw_input_id, old.section_title, old.markdown, coalesce(old.file_path, ''));
+      INSERT INTO workspace_raw_input_chunks_fts(rowid, raw_input_id, section_title, markdown, file_path)
+      VALUES (new.id, new.raw_input_id, new.section_title, new.markdown, coalesce(new.file_path, ''));
+    END;
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_raw_input_chunks_workspace
+      ON workspace_raw_input_chunks(workspace_id, raw_input_id, chunk_order);
+
+    CREATE TABLE IF NOT EXISTS workspace_sync_targets (
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('obsidian')),
+      target_path TEXT NOT NULL,
+      export_subdir TEXT NOT NULL,
+      last_synced_at TEXT,
+      last_sync_status TEXT CHECK(last_sync_status IN ('success', 'failed')),
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(workspace_id, kind, target_path)
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_question_runs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      question TEXT NOT NULL,
+      format TEXT NOT NULL CHECK(format IN ('report', 'slides', 'summary', 'note')),
+      artifact_path TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('success', 'failed')),
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_question_runs_workspace
+      ON workspace_question_runs(workspace_id, completed_at DESC);
+
     CREATE INDEX IF NOT EXISTS idx_workspace_compile_runs_workspace
       ON workspace_compile_runs(workspace_id, finished_at);
 
     CREATE INDEX IF NOT EXISTS idx_workspace_artifact_provenance_workspace
       ON workspace_artifact_provenance(workspace_id, artifact_path);
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_artifact_raw_input_provenance_workspace
+      ON workspace_artifact_raw_input_provenance(workspace_id, artifact_path);
   `);
 
   const sourceColumns = db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>;
@@ -497,6 +735,11 @@ function initSchema(db: Database.Database): void {
   }
   if (!chunkColumns.some((column) => column.name === 'language')) {
     db.exec('ALTER TABLE chunks ADD COLUMN language TEXT');
+  }
+
+  const workspaceColumns = db.prepare('PRAGMA table_info(workspaces)').all() as Array<{ name: string }>;
+  if (!workspaceColumns.some((column) => column.name === 'auto_compile_enabled')) {
+    db.exec(`ALTER TABLE workspaces ADD COLUMN auto_compile_enabled INTEGER NOT NULL DEFAULT 0 CHECK(auto_compile_enabled IN (0, 1))`);
   }
 }
 
@@ -606,6 +849,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         w.id,
         w.label,
         w.purpose,
+        w.auto_compile_enabled,
         w.compiler_profile_json,
         w.default_output_formats_json,
         w.created_at,
@@ -631,6 +875,7 @@ export function openCatalog(options: OpenCatalogOptions) {
     id: row.id,
     label: row.label,
     purpose: row.purpose,
+    autoCompileEnabled: row.auto_compile_enabled === 1,
     compilerProfile: JSON.parse(row.compiler_profile_json) as WorkspaceCompilerProfile,
     defaultOutputFormats: JSON.parse(row.default_output_formats_json) as WorkspaceOutputFormat[],
     bindingCount: row.binding_count,
@@ -640,6 +885,20 @@ export function openCatalog(options: OpenCatalogOptions) {
     lastCompiledAt: row.last_compiled_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  });
+
+  const mapWorkspaceCompileJobRow = (row: WorkspaceCompileJobRow): WorkspaceCompileJobRecord => ({
+    workspaceId: row.workspace_id,
+    status: row.status,
+    requestedSourceIds: JSON.parse(row.requested_source_ids_json) as string[],
+    requestedRawInputIds: JSON.parse(row.requested_raw_input_ids_json) as string[],
+    requestedFingerprint: row.requested_fingerprint,
+    attemptCount: row.attempt_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    claimedAt: row.claimed_at,
+    completedAt: row.completed_at,
+    errorMessage: row.error_message,
   });
 
   const assertWorkspaceExists = (workspaceId: string): WorkspaceRow => {
@@ -675,6 +934,24 @@ export function openCatalog(options: OpenCatalogOptions) {
         AND wa.path = ?
     `).get(workspaceId, artifactPath) as WorkspaceArtifactRow | undefined;
 
+  const getWorkspaceCompileJobRow = (workspaceId: string): WorkspaceCompileJobRow | undefined =>
+    db.prepare(`
+      SELECT
+        workspace_id,
+        status,
+        requested_source_ids_json,
+        requested_raw_input_ids_json,
+        requested_fingerprint,
+        attempt_count,
+        created_at,
+        updated_at,
+        claimed_at,
+        completed_at,
+        error_message
+      FROM workspace_compile_jobs
+      WHERE workspace_id = ?
+    `).get(workspaceId) as WorkspaceCompileJobRow | undefined;
+
   const mapWorkspaceArtifactRow = (row: WorkspaceArtifactRow) => ({
     workspaceId: row.workspace_id,
     path: row.path,
@@ -685,6 +962,57 @@ export function openCatalog(options: OpenCatalogOptions) {
     chunkCount: row.chunk_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  });
+
+  const mapWorkspaceArtifactLinkRow = (row: WorkspaceArtifactLinkRow): WorkspaceArtifactLinkRecord => ({
+    workspaceId: row.workspace_id,
+    fromPath: row.from_path,
+    toPath: row.to_path,
+    relationKind: row.relation_kind as WorkspaceArtifactLinkRecord['relationKind'],
+    anchorText: row.anchor_text,
+    source: row.source,
+    broken: row.broken === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+
+  const mapWorkspaceRawInputRow = (row: WorkspaceRawInputRow): WorkspaceRawInputRecord => ({
+    id: row.id,
+    workspaceId: row.workspace_id,
+    kind: row.kind,
+    label: row.label,
+    sourcePath: row.source_path,
+    storagePath: row.storage_path,
+    extractedTextPath: row.extracted_text_path,
+    contentHash: row.content_hash,
+    metadata: JSON.parse(row.metadata_json) as Record<string, unknown>,
+    chunkCount: row.chunk_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+
+  const mapWorkspaceSyncTargetRow = (row: WorkspaceSyncTargetRow): WorkspaceSyncTargetRecord => ({
+    workspaceId: row.workspace_id,
+    kind: row.kind,
+    targetPath: row.target_path,
+    exportSubdir: row.export_subdir,
+    lastSyncedAt: row.last_synced_at,
+    lastSyncStatus: row.last_sync_status,
+    lastErrorMessage: row.last_error_message,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+
+  const mapWorkspaceQuestionRunRow = (row: WorkspaceQuestionRunRow): WorkspaceQuestionRunRecord => ({
+    id: row.id,
+    workspaceId: row.workspace_id,
+    question: row.question,
+    format: row.format,
+    artifactPath: row.artifact_path,
+    status: row.status,
+    errorMessage: row.error_message,
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
   });
 
   const resolveSearchScope = (input: SearchInput): SearchScope => {
@@ -1226,6 +1554,7 @@ export function openCatalog(options: OpenCatalogOptions) {
       id: string;
       label: string;
       purpose?: string | null;
+      autoCompileEnabled?: boolean;
       compilerProfile: WorkspaceCompilerProfile;
       defaultOutputFormats: WorkspaceOutputFormat[];
     }): WorkspaceRecord {
@@ -1235,6 +1564,7 @@ export function openCatalog(options: OpenCatalogOptions) {
           id,
           label,
           purpose,
+          auto_compile_enabled,
           compiler_profile_json,
           default_output_formats_json,
           created_at,
@@ -1242,10 +1572,11 @@ export function openCatalog(options: OpenCatalogOptions) {
           last_compile_run_id,
           last_compile_status,
           last_compiled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
         ON CONFLICT(id) DO UPDATE SET
           label = excluded.label,
           purpose = excluded.purpose,
+          auto_compile_enabled = excluded.auto_compile_enabled,
           compiler_profile_json = excluded.compiler_profile_json,
           default_output_formats_json = excluded.default_output_formats_json,
           updated_at = excluded.updated_at
@@ -1253,6 +1584,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         input.id,
         input.label,
         input.purpose ?? null,
+        input.autoCompileEnabled ? 1 : 0,
         stableStringify(input.compilerProfile),
         stableStringify(input.defaultOutputFormats),
         timestamp,
@@ -1262,12 +1594,33 @@ export function openCatalog(options: OpenCatalogOptions) {
       return mapWorkspaceRow(assertWorkspaceExists(input.id));
     },
 
+    updateWorkspaceAutoCompile(input: {
+      workspaceId: string;
+      autoCompileEnabled: boolean;
+    }): WorkspaceRecord {
+      assertWorkspaceExists(input.workspaceId);
+      db.prepare(`
+        UPDATE workspaces
+        SET
+          auto_compile_enabled = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        input.autoCompileEnabled ? 1 : 0,
+        nowIso(),
+        input.workspaceId,
+      );
+
+      return mapWorkspaceRow(assertWorkspaceExists(input.workspaceId));
+    },
+
     listWorkspaces(): WorkspaceRecord[] {
       const rows = db.prepare(`
         SELECT
           w.id,
           w.label,
           w.purpose,
+          w.auto_compile_enabled,
           w.compiler_profile_json,
           w.default_output_formats_json,
           w.created_at,
@@ -1360,6 +1713,23 @@ export function openCatalog(options: OpenCatalogOptions) {
       }));
     },
 
+    listAutoCompileWorkspaceIdsForSources(sourceIds: string[]): string[] {
+      if (sourceIds.length === 0) {
+        return [];
+      }
+
+      const rows = db.prepare(`
+        SELECT DISTINCT wb.workspace_id
+        FROM workspace_source_bindings wb
+        JOIN workspaces w ON w.id = wb.workspace_id
+        WHERE w.auto_compile_enabled = 1
+          AND wb.source_id IN (${sourceIds.map(() => '?').join(',')})
+        ORDER BY wb.workspace_id
+      `).all(...sourceIds) as Array<{ workspace_id: string }>;
+
+      return rows.map((row) => row.workspace_id);
+    },
+
     recordWorkspaceCompileRun(input: {
       workspaceId: string;
       status: WorkspaceCompileRunStatus;
@@ -1449,6 +1819,247 @@ export function openCatalog(options: OpenCatalogOptions) {
       }));
     },
 
+    getWorkspaceCompileJob(workspaceId: string): WorkspaceCompileJobRecord | null {
+      assertWorkspaceExists(workspaceId);
+      const row = getWorkspaceCompileJobRow(workspaceId);
+
+      return row ? mapWorkspaceCompileJobRow(row) : null;
+    },
+
+    listWorkspaceCompileJobs(workspaceId?: string): WorkspaceCompileJobRecord[] {
+      const rows = workspaceId
+        ? db.prepare(`
+            SELECT
+              workspace_id,
+              status,
+              requested_source_ids_json,
+              requested_raw_input_ids_json,
+              requested_fingerprint,
+              attempt_count,
+              created_at,
+              updated_at,
+              claimed_at,
+              completed_at,
+              error_message
+            FROM workspace_compile_jobs
+            WHERE workspace_id = ?
+            ORDER BY updated_at DESC, workspace_id
+          `).all(workspaceId) as WorkspaceCompileJobRow[]
+        : db.prepare(`
+            SELECT
+              workspace_id,
+              status,
+              requested_source_ids_json,
+              requested_raw_input_ids_json,
+              requested_fingerprint,
+              attempt_count,
+              created_at,
+              updated_at,
+              claimed_at,
+              completed_at,
+              error_message
+            FROM workspace_compile_jobs
+            ORDER BY updated_at DESC, workspace_id
+          `).all() as WorkspaceCompileJobRow[];
+
+      return rows.map(mapWorkspaceCompileJobRow);
+    },
+
+    enqueueWorkspaceCompile(input: {
+      workspaceId: string;
+      sourceIds?: string[];
+      rawInputIds?: string[];
+      requestedFingerprint?: string | null;
+    }): WorkspaceCompileJobRecord {
+      assertWorkspaceExists(input.workspaceId);
+      const timestamp = nowIso();
+      const sourceIds = [...new Set((input.sourceIds ?? []).filter(Boolean))].sort();
+      const rawInputIds = [...new Set((input.rawInputIds ?? []).filter(Boolean))].sort();
+      const existing = getWorkspaceCompileJobRow(input.workspaceId);
+
+      if (!existing) {
+        db.prepare(`
+          INSERT INTO workspace_compile_jobs (
+            workspace_id,
+            status,
+            requested_source_ids_json,
+            requested_raw_input_ids_json,
+            requested_fingerprint,
+            attempt_count,
+            created_at,
+            updated_at,
+            claimed_at,
+            completed_at,
+            error_message
+          ) VALUES (?, 'pending', ?, ?, ?, 0, ?, ?, NULL, NULL, NULL)
+        `).run(
+          input.workspaceId,
+          stableStringify(sourceIds),
+          stableStringify(rawInputIds),
+          input.requestedFingerprint ?? null,
+          timestamp,
+          timestamp,
+        );
+      } else {
+        const mergedSourceIds = [...new Set([
+          ...(JSON.parse(existing.requested_source_ids_json) as string[]),
+          ...sourceIds,
+        ])].sort();
+        const mergedRawInputIds = [...new Set([
+          ...(JSON.parse(existing.requested_raw_input_ids_json) as string[]),
+          ...rawInputIds,
+        ])].sort();
+        const shouldStayRunning = existing.status === 'running';
+        db.prepare(`
+          UPDATE workspace_compile_jobs
+          SET
+            status = ?,
+            requested_source_ids_json = ?,
+            requested_raw_input_ids_json = ?,
+            requested_fingerprint = ?,
+            updated_at = ?,
+            completed_at = CASE WHEN ? = 1 THEN completed_at ELSE NULL END,
+            error_message = CASE WHEN ? = 1 THEN error_message ELSE NULL END
+          WHERE workspace_id = ?
+        `).run(
+          shouldStayRunning ? 'running' : 'pending',
+          stableStringify(mergedSourceIds),
+          stableStringify(mergedRawInputIds),
+          input.requestedFingerprint ?? existing.requested_fingerprint,
+          timestamp,
+          shouldStayRunning ? 1 : 0,
+          shouldStayRunning ? 1 : 0,
+          input.workspaceId,
+        );
+      }
+
+      return mapWorkspaceCompileJobRow(getWorkspaceCompileJobRow(input.workspaceId)!);
+    },
+
+    claimNextWorkspaceCompileJob(): WorkspaceCompileJobRecord | null {
+      const selectPending = db.prepare(`
+        SELECT
+          workspace_id,
+          status,
+          requested_source_ids_json,
+          requested_raw_input_ids_json,
+          requested_fingerprint,
+          attempt_count,
+          created_at,
+          updated_at,
+          claimed_at,
+          completed_at,
+          error_message
+        FROM workspace_compile_jobs
+        WHERE status = 'pending'
+        ORDER BY updated_at ASC, created_at ASC, workspace_id ASC
+        LIMIT 1
+      `);
+      const claimPending = db.prepare(`
+        UPDATE workspace_compile_jobs
+        SET
+          status = 'running',
+          attempt_count = attempt_count + 1,
+          claimed_at = ?,
+          updated_at = ?,
+          error_message = NULL
+        WHERE workspace_id = ?
+          AND status = 'pending'
+      `);
+
+      const claim = db.transaction(() => {
+        while (true) {
+          const pending = selectPending.get() as WorkspaceCompileJobRow | undefined;
+          if (!pending) {
+            return null;
+          }
+
+          const timestamp = nowIso();
+          const result = claimPending.run(timestamp, timestamp, pending.workspace_id);
+          if (result.changes === 0) {
+            continue;
+          }
+
+          const row = getWorkspaceCompileJobRow(pending.workspace_id);
+          return row ? mapWorkspaceCompileJobRow(row) : null;
+        }
+      });
+
+      return claim();
+    },
+
+    completeWorkspaceCompileJob(input: {
+      workspaceId: string;
+      completedFingerprint: string;
+    }): WorkspaceCompileJobRecord | null {
+      const existing = getWorkspaceCompileJobRow(input.workspaceId);
+
+      if (!existing) {
+        return null;
+      }
+
+      const timestamp = nowIso();
+      if (
+        existing.status === 'running'
+        && existing.requested_fingerprint
+        && existing.requested_fingerprint !== input.completedFingerprint
+      ) {
+        db.prepare(`
+          UPDATE workspace_compile_jobs
+          SET
+            status = 'pending',
+            updated_at = ?,
+            claimed_at = NULL,
+            completed_at = NULL,
+            error_message = NULL
+          WHERE workspace_id = ?
+        `).run(timestamp, input.workspaceId);
+      } else {
+        db.prepare(`
+          UPDATE workspace_compile_jobs
+          SET
+            status = 'succeeded',
+            requested_source_ids_json = '[]',
+            requested_raw_input_ids_json = '[]',
+            requested_fingerprint = ?,
+            updated_at = ?,
+            claimed_at = NULL,
+            completed_at = ?,
+            error_message = NULL
+          WHERE workspace_id = ?
+        `).run(input.completedFingerprint, timestamp, timestamp, input.workspaceId);
+      }
+
+      const row = getWorkspaceCompileJobRow(input.workspaceId);
+      return row ? mapWorkspaceCompileJobRow(row) : null;
+    },
+
+    failWorkspaceCompileJob(input: {
+      workspaceId: string;
+      errorMessage: string;
+    }): WorkspaceCompileJobRecord | null {
+      const existingRow = getWorkspaceCompileJobRow(input.workspaceId);
+      const existing = existingRow ? mapWorkspaceCompileJobRow(existingRow) : null;
+      if (!existing) {
+        return null;
+      }
+
+      const timestamp = nowIso();
+      db.prepare(`
+        UPDATE workspace_compile_jobs
+        SET
+          status = 'failed',
+          updated_at = ?,
+          completed_at = ?,
+          claimed_at = NULL,
+          error_message = ?
+        WHERE workspace_id = ?
+      `).run(timestamp, timestamp, input.errorMessage, input.workspaceId);
+
+      const row = getWorkspaceCompileJobRow(input.workspaceId);
+      return row ? mapWorkspaceCompileJobRow(row) : null;
+    },
+
     upsertWorkspaceArtifact(input: {
       workspaceId: string;
       path: string;
@@ -1458,6 +2069,8 @@ export function openCatalog(options: OpenCatalogOptions) {
       stale: boolean;
       chunks: WorkspaceArtifactChunkInput[];
       provenance: WorkspaceArtifactProvenanceInput[];
+      rawInputProvenance?: WorkspaceArtifactRawInputProvenanceInput[];
+      links?: WorkspaceArtifactLinkInput[];
     }): WorkspaceArtifactRow {
       assertWorkspaceExists(input.workspaceId);
       const timestamp = nowIso();
@@ -1531,6 +2144,18 @@ export function openCatalog(options: OpenCatalogOptions) {
             AND artifact_path = ?
         `).run(input.workspaceId, input.path);
 
+        db.prepare(`
+          DELETE FROM workspace_artifact_raw_input_provenance
+          WHERE workspace_id = ?
+            AND artifact_path = ?
+        `).run(input.workspaceId, input.path);
+
+        db.prepare(`
+          DELETE FROM workspace_artifact_links
+          WHERE workspace_id = ?
+            AND from_path = ?
+        `).run(input.workspaceId, input.path);
+
         const insertProvenance = db.prepare(`
           INSERT INTO workspace_artifact_provenance (
             workspace_id,
@@ -1549,6 +2174,56 @@ export function openCatalog(options: OpenCatalogOptions) {
             provenance.snapshotId,
             stableStringify([...new Set(provenance.chunkIds)]),
           );
+        }
+
+        if (input.rawInputProvenance && input.rawInputProvenance.length > 0) {
+          const insertRawInputProvenance = db.prepare(`
+            INSERT INTO workspace_artifact_raw_input_provenance (
+              workspace_id,
+              artifact_path,
+              raw_input_id,
+              chunk_ids_json
+            ) VALUES (?, ?, ?, ?)
+          `);
+
+          for (const provenance of input.rawInputProvenance) {
+            insertRawInputProvenance.run(
+              input.workspaceId,
+              input.path,
+              provenance.rawInputId,
+              stableStringify([...new Set(provenance.chunkIds)]),
+            );
+          }
+        }
+
+        if (input.links && input.links.length > 0) {
+          const insertLink = db.prepare(`
+            INSERT INTO workspace_artifact_links (
+              workspace_id,
+              from_path,
+              to_path,
+              relation_kind,
+              anchor_text,
+              source,
+              broken,
+              created_at,
+              updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const link of input.links) {
+            insertLink.run(
+              input.workspaceId,
+              link.fromPath,
+              link.toPath,
+              link.relationKind,
+              link.anchorText ?? null,
+              link.source ?? 'deterministic',
+              link.broken ? 1 : 0,
+              timestamp,
+              timestamp,
+            );
+          }
         }
       });
 
@@ -1764,6 +2439,516 @@ export function openCatalog(options: OpenCatalogOptions) {
         snapshotId: row.snapshot_id,
         chunkIds: JSON.parse(row.chunk_ids_json) as number[],
       }));
+    },
+
+    listWorkspaceArtifactRawInputProvenance(workspaceId: string, artifactPath: string): WorkspaceArtifactRawInputProvenanceRecord[] {
+      assertWorkspaceExists(workspaceId);
+      if (!getWorkspaceArtifactRow(workspaceId, artifactPath)) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.workspaceArtifactNotFound,
+          `Workspace artifact '${artifactPath}' not found in '${workspaceId}'`,
+        );
+      }
+
+      const rows = db.prepare(`
+        SELECT workspace_id, artifact_path, raw_input_id, chunk_ids_json
+        FROM workspace_artifact_raw_input_provenance
+        WHERE workspace_id = ?
+          AND artifact_path = ?
+        ORDER BY raw_input_id
+      `).all(workspaceId, artifactPath) as WorkspaceArtifactRawInputProvenanceRow[];
+
+      return rows.map((row) => ({
+        workspaceId: row.workspace_id,
+        path: row.artifact_path,
+        rawInputId: row.raw_input_id,
+        chunkIds: JSON.parse(row.chunk_ids_json) as number[],
+      }));
+    },
+
+    listWorkspaceArtifactLinks(input: {
+      workspaceId: string;
+      artifactPath?: string;
+      direction?: 'outgoing' | 'incoming' | 'both';
+    }): WorkspaceArtifactLinkRecord[] {
+      assertWorkspaceExists(input.workspaceId);
+      const direction = input.direction ?? 'both';
+      const rows = input.artifactPath
+        ? db.prepare(`
+            SELECT
+              workspace_id,
+              from_path,
+              to_path,
+              relation_kind,
+              anchor_text,
+              source,
+              broken,
+              created_at,
+              updated_at
+            FROM workspace_artifact_links
+            WHERE workspace_id = ?
+              AND (
+                (? = 'outgoing' AND from_path = ?)
+                OR (? = 'incoming' AND to_path = ?)
+                OR (? = 'both' AND (from_path = ? OR to_path = ?))
+              )
+            ORDER BY from_path, to_path, relation_kind
+          `).all(
+            input.workspaceId,
+            direction,
+            input.artifactPath,
+            direction,
+            input.artifactPath,
+            direction,
+            input.artifactPath,
+            input.artifactPath,
+          ) as WorkspaceArtifactLinkRow[]
+        : db.prepare(`
+            SELECT
+              workspace_id,
+              from_path,
+              to_path,
+              relation_kind,
+              anchor_text,
+              source,
+              broken,
+              created_at,
+              updated_at
+            FROM workspace_artifact_links
+            WHERE workspace_id = ?
+            ORDER BY from_path, to_path, relation_kind
+          `).all(input.workspaceId) as WorkspaceArtifactLinkRow[];
+
+      return rows.map(mapWorkspaceArtifactLinkRow);
+    },
+
+    upsertWorkspaceRawInput(input: {
+      id: string;
+      workspaceId: string;
+      kind: WorkspaceRawInputKind;
+      label: string;
+      sourcePath: string;
+      storagePath: string;
+      extractedTextPath?: string | null;
+      contentHash: string;
+      metadata: Record<string, unknown>;
+      chunks: WorkspaceRawInputChunkInput[];
+    }): WorkspaceRawInputRecord {
+      assertWorkspaceExists(input.workspaceId);
+      const timestamp = nowIso();
+      const normalizedChunks = input.chunks.map((chunk, index) => ({
+        sectionTitle: chunk.sectionTitle,
+        markdown: chunk.markdown.trim(),
+        contentHash: sha256(chunk.markdown.trim()),
+        filePath: chunk.filePath ?? null,
+        chunkOrder: index,
+      }));
+
+      const transaction = db.transaction(() => {
+        db.prepare(`
+          INSERT INTO workspace_raw_inputs (
+            id,
+            workspace_id,
+            kind,
+            label,
+            source_path,
+            storage_path,
+            extracted_text_path,
+            content_hash,
+            metadata_json,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            kind = excluded.kind,
+            label = excluded.label,
+            source_path = excluded.source_path,
+            storage_path = excluded.storage_path,
+            extracted_text_path = excluded.extracted_text_path,
+            content_hash = excluded.content_hash,
+            metadata_json = excluded.metadata_json,
+            updated_at = excluded.updated_at
+        `).run(
+          input.id,
+          input.workspaceId,
+          input.kind,
+          input.label,
+          input.sourcePath,
+          input.storagePath,
+          input.extractedTextPath ?? null,
+          input.contentHash,
+          stableStringify(input.metadata),
+          timestamp,
+          timestamp,
+        );
+
+        db.prepare(`
+          DELETE FROM workspace_raw_input_chunks
+          WHERE workspace_id = ?
+            AND raw_input_id = ?
+        `).run(input.workspaceId, input.id);
+
+        const insertChunk = db.prepare(`
+          INSERT INTO workspace_raw_input_chunks (
+            workspace_id,
+            raw_input_id,
+            section_title,
+            chunk_order,
+            markdown,
+            content_hash,
+            file_path
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const chunk of normalizedChunks) {
+          insertChunk.run(
+            input.workspaceId,
+            input.id,
+            chunk.sectionTitle,
+            chunk.chunkOrder,
+            chunk.markdown,
+            chunk.contentHash,
+            chunk.filePath,
+          );
+        }
+      });
+
+      transaction();
+
+      const row = db.prepare(`
+        SELECT
+          wri.id,
+          wri.workspace_id,
+          wri.kind,
+          wri.label,
+          wri.source_path,
+          wri.storage_path,
+          wri.extracted_text_path,
+          wri.content_hash,
+          wri.metadata_json,
+          wri.created_at,
+          wri.updated_at,
+          (
+            SELECT COUNT(*)
+            FROM workspace_raw_input_chunks wric
+            WHERE wric.workspace_id = wri.workspace_id
+              AND wric.raw_input_id = wri.id
+          ) AS chunk_count
+        FROM workspace_raw_inputs wri
+        WHERE wri.workspace_id = ?
+          AND wri.id = ?
+      `).get(input.workspaceId, input.id) as WorkspaceRawInputRow | undefined;
+
+      if (!row) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.invalidArgument,
+          `Workspace raw input '${input.id}' not found in '${input.workspaceId}' after upsert`,
+        );
+      }
+
+      return mapWorkspaceRawInputRow(row);
+    },
+
+    listWorkspaceRawInputs(workspaceId: string): WorkspaceRawInputRecord[] {
+      assertWorkspaceExists(workspaceId);
+      const rows = db.prepare(`
+        SELECT
+          wri.id,
+          wri.workspace_id,
+          wri.kind,
+          wri.label,
+          wri.source_path,
+          wri.storage_path,
+          wri.extracted_text_path,
+          wri.content_hash,
+          wri.metadata_json,
+          wri.created_at,
+          wri.updated_at,
+          (
+            SELECT COUNT(*)
+            FROM workspace_raw_input_chunks wric
+            WHERE wric.workspace_id = wri.workspace_id
+              AND wric.raw_input_id = wri.id
+          ) AS chunk_count
+        FROM workspace_raw_inputs wri
+        WHERE wri.workspace_id = ?
+        ORDER BY wri.created_at, wri.id
+      `).all(workspaceId) as WorkspaceRawInputRow[];
+
+      return rows.map(mapWorkspaceRawInputRow);
+    },
+
+    getWorkspaceRawInput(workspaceId: string, rawInputId: string): WorkspaceRawInputRecord | null {
+      assertWorkspaceExists(workspaceId);
+      const row = db.prepare(`
+        SELECT
+          wri.id,
+          wri.workspace_id,
+          wri.kind,
+          wri.label,
+          wri.source_path,
+          wri.storage_path,
+          wri.extracted_text_path,
+          wri.content_hash,
+          wri.metadata_json,
+          wri.created_at,
+          wri.updated_at,
+          (
+            SELECT COUNT(*)
+            FROM workspace_raw_input_chunks wric
+            WHERE wric.workspace_id = wri.workspace_id
+              AND wric.raw_input_id = wri.id
+          ) AS chunk_count
+        FROM workspace_raw_inputs wri
+        WHERE wri.workspace_id = ?
+          AND wri.id = ?
+      `).get(workspaceId, rawInputId) as WorkspaceRawInputRow | undefined;
+
+      return row ? mapWorkspaceRawInputRow(row) : null;
+    },
+
+    deleteWorkspaceRawInput(workspaceId: string, rawInputId: string): { deletedCount: number } {
+      assertWorkspaceExists(workspaceId);
+      const result = db.prepare(`
+        DELETE FROM workspace_raw_inputs
+        WHERE workspace_id = ?
+          AND id = ?
+      `).run(workspaceId, rawInputId);
+      return { deletedCount: result.changes };
+    },
+
+    listWorkspaceRawInputChunks(workspaceId: string, rawInputId: string): WorkspaceRawInputChunkRow[] {
+      assertWorkspaceExists(workspaceId);
+      return db.prepare(`
+        SELECT
+          id,
+          workspace_id,
+          raw_input_id,
+          section_title,
+          markdown,
+          file_path,
+          0 AS score
+        FROM workspace_raw_input_chunks
+        WHERE workspace_id = ?
+          AND raw_input_id = ?
+        ORDER BY chunk_order, id
+      `).all(workspaceId, rawInputId) as WorkspaceRawInputChunkRow[];
+    },
+
+    searchWorkspaceRawInputs(input: {
+      workspaceId: string;
+      query: string;
+      limit?: number;
+      offset?: number;
+      kinds?: WorkspaceRawInputKind[];
+    }): {
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+      results: WorkspaceRawInputSearchRow[];
+    } {
+      assertWorkspaceExists(input.workspaceId);
+      const normalized = normalizeQuery(input.query);
+      const limit = assertPaginationValue(input.limit, 'limit', 10);
+      const offset = assertPaginationValue(input.offset, 'offset', 0);
+      const normalizedKinds = input.kinds && input.kinds.length > 0 ? [...new Set(input.kinds)] : null;
+
+      if (!normalized) {
+        return {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+          results: [],
+        };
+      }
+
+      const kindSql = normalizedKinds
+        ? `AND wri.kind IN (${normalizedKinds.map(() => '?').join(',')})`
+        : '';
+      const args = [normalized, input.workspaceId, ...(normalizedKinds ?? [])];
+
+      const totalRow = db.prepare(`
+        SELECT COUNT(*) AS total
+        FROM workspace_raw_input_chunks_fts
+        JOIN workspace_raw_input_chunks wric ON wric.rowid = workspace_raw_input_chunks_fts.rowid
+        JOIN workspace_raw_inputs wri
+          ON wri.workspace_id = wric.workspace_id
+         AND wri.id = wric.raw_input_id
+        WHERE workspace_raw_input_chunks_fts MATCH ?
+          AND wric.workspace_id = ?
+          ${kindSql}
+      `).get(...args) as { total: number };
+
+      const rows = db.prepare(`
+        SELECT
+          wri.id AS raw_input_id,
+          wri.kind,
+          wri.label,
+          wric.section_title,
+          wric.markdown,
+          wric.file_path,
+          bm25(workspace_raw_input_chunks_fts) AS rank
+        FROM workspace_raw_input_chunks_fts
+        JOIN workspace_raw_input_chunks wric ON wric.rowid = workspace_raw_input_chunks_fts.rowid
+        JOIN workspace_raw_inputs wri
+          ON wri.workspace_id = wric.workspace_id
+         AND wri.id = wric.raw_input_id
+        WHERE workspace_raw_input_chunks_fts MATCH ?
+          AND wric.workspace_id = ?
+          ${kindSql}
+        ORDER BY bm25(workspace_raw_input_chunks_fts), wric.rowid
+        LIMIT ?
+        OFFSET ?
+      `).all(...args, limit, offset) as Array<{
+        raw_input_id: string;
+        kind: WorkspaceRawInputKind;
+        label: string;
+        section_title: string;
+        markdown: string;
+        file_path: string | null;
+        rank: number;
+      }>;
+
+      return {
+        total: totalRow.total,
+        limit,
+        offset,
+        hasMore: offset + rows.length < totalRow.total,
+        results: rows.map((row) => ({
+          rawInputId: row.raw_input_id,
+          kind: row.kind,
+          label: row.label,
+          sectionTitle: row.section_title,
+          markdown: row.markdown,
+          filePath: row.file_path,
+          score: typeof row.rank === 'number' ? Math.abs(row.rank) : 0,
+        })),
+      };
+    },
+
+    upsertWorkspaceSyncTarget(input: {
+      workspaceId: string;
+      kind: WorkspaceSyncTargetKind;
+      targetPath: string;
+      exportSubdir: string;
+      lastSyncedAt?: string | null;
+      lastSyncStatus?: 'success' | 'failed' | null;
+      lastErrorMessage?: string | null;
+    }): WorkspaceSyncTargetRecord {
+      assertWorkspaceExists(input.workspaceId);
+      const timestamp = nowIso();
+      db.prepare(`
+        INSERT INTO workspace_sync_targets (
+          workspace_id,
+          kind,
+          target_path,
+          export_subdir,
+          last_synced_at,
+          last_sync_status,
+          last_error_message,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, kind, target_path) DO UPDATE SET
+          export_subdir = excluded.export_subdir,
+          last_synced_at = excluded.last_synced_at,
+          last_sync_status = excluded.last_sync_status,
+          last_error_message = excluded.last_error_message,
+          updated_at = excluded.updated_at
+      `).run(
+        input.workspaceId,
+        input.kind,
+        input.targetPath,
+        input.exportSubdir,
+        input.lastSyncedAt ?? null,
+        input.lastSyncStatus ?? null,
+        input.lastErrorMessage ?? null,
+        timestamp,
+        timestamp,
+      );
+
+      const row = db.prepare(`
+        SELECT workspace_id, kind, target_path, export_subdir, last_synced_at, last_sync_status, last_error_message, created_at, updated_at
+        FROM workspace_sync_targets
+        WHERE workspace_id = ? AND kind = ? AND target_path = ?
+      `).get(input.workspaceId, input.kind, input.targetPath) as WorkspaceSyncTargetRow;
+
+      return mapWorkspaceSyncTargetRow(row);
+    },
+
+    listWorkspaceSyncTargets(workspaceId: string): WorkspaceSyncTargetRecord[] {
+      assertWorkspaceExists(workspaceId);
+      const rows = db.prepare(`
+        SELECT workspace_id, kind, target_path, export_subdir, last_synced_at, last_sync_status, last_error_message, created_at, updated_at
+        FROM workspace_sync_targets
+        WHERE workspace_id = ?
+        ORDER BY kind, target_path
+      `).all(workspaceId) as WorkspaceSyncTargetRow[];
+      return rows.map(mapWorkspaceSyncTargetRow);
+    },
+
+    recordWorkspaceQuestionRun(input: {
+      workspaceId: string;
+      question: string;
+      format: WorkspaceAnswerFormat;
+      artifactPath: string;
+      status: 'success' | 'failed';
+      errorMessage?: string | null;
+      createdAt?: string;
+      completedAt?: string;
+    }): WorkspaceQuestionRunRecord {
+      assertWorkspaceExists(input.workspaceId);
+      const createdAt = input.createdAt ?? nowIso();
+      const completedAt = input.completedAt ?? createdAt;
+      const runId = `wrkq_${completedAt.replace(/[-:.TZ]/g, '')}_${randomUUID().slice(0, 8)}`;
+      db.prepare(`
+        INSERT INTO workspace_question_runs (
+          id,
+          workspace_id,
+          question,
+          format,
+          artifact_path,
+          status,
+          error_message,
+          created_at,
+          completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        runId,
+        input.workspaceId,
+        input.question,
+        input.format,
+        input.artifactPath,
+        input.status,
+        input.errorMessage ?? null,
+        createdAt,
+        completedAt,
+      );
+      return {
+        id: runId,
+        workspaceId: input.workspaceId,
+        question: input.question,
+        format: input.format,
+        artifactPath: input.artifactPath,
+        status: input.status,
+        errorMessage: input.errorMessage ?? null,
+        createdAt,
+        completedAt,
+      };
+    },
+
+    listWorkspaceQuestionRuns(workspaceId: string): WorkspaceQuestionRunRecord[] {
+      assertWorkspaceExists(workspaceId);
+      const rows = db.prepare(`
+        SELECT id, workspace_id, question, format, artifact_path, status, error_message, created_at, completed_at
+        FROM workspace_question_runs
+        WHERE workspace_id = ?
+        ORDER BY completed_at DESC, id DESC
+      `).all(workspaceId) as WorkspaceQuestionRunRow[];
+
+      return rows.map(mapWorkspaceQuestionRunRow);
     },
 
     recordSuccessfulSnapshot(input: RecordSuccessfulSnapshotInput): { snapshotId: string; reused: boolean } {

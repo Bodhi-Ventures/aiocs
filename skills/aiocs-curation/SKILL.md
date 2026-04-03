@@ -15,6 +15,7 @@ Use this skill when you need to add, refresh, repair, or otherwise mutate `aiocs
 - A reusable external git repository should be added as a `kind: git` source under `~/.aiocs/sources`.
 - A canary is failing and the source needs remediation or targeted refetch.
 - A research workspace needs to be created, rebound, compiled, or asked to generate a report/slide artifact.
+- A workspace needs raw evidence ingest, auto-compile setup, queued compile processing, or Obsidian sync.
 - The user explicitly wants `aiocs` maintenance, source onboarding, or catalog repair.
 
 ## Trigger guidance for Codex
@@ -76,8 +77,13 @@ Compile or regenerate a workspace wiki:
 docs --json workspace create market-structure --label "Market Structure"
 docs --json workspace bind market-structure hyperliquid nktkas-hyperliquid
 docs --json workspace compile market-structure
+docs --json workspace configure market-structure --auto-compile true
+docs --json workspace queue-run
+docs --json workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
 docs --json workspace output market-structure report --name weekly-brief
 docs --json workspace output market-structure slides --name weekly-brief
+docs --json workspace answer market-structure note "What changed?" --name quick-note
+docs --json workspace sync obsidian market-structure /absolute/path/to/vault
 ```
 
 Heavy maintenance remains explicit:
@@ -105,8 +111,14 @@ The `aiocs-mcp` server exposes the same curation operations without shell parsin
 - `workspace_create`
 - `workspace_bind`
 - `workspace_unbind`
+- `workspace_update`
 - `workspace_compile`
+- `workspace_queue_run`
+- `workspace_ingest_add`
+- `workspace_ingest_remove`
 - `workspace_output`
+- `workspace_answer`
+- `workspace_sync_obsidian`
 - `batch`
 
 ## Recommended Codex workflow
@@ -116,9 +128,10 @@ The `aiocs-mcp` server exposes the same curation operations without shell parsin
 3. If the source is missing but worth curating, create a spec under `~/.aiocs/sources`, then `source_upsert` it.
 4. After upsert, use `refresh due <source-id>` as the safe first fetch path.
 5. Use `canary` when the site changed or extraction drift is suspected.
-6. For research workspaces, bind curated sources first and then run `workspace compile`.
-7. Use `workspace output` only after a successful compile so outputs have source-backed provenance.
-8. Escalate to `fetch <source-id>` or `fetch all` only for explicit maintenance or when due-based refresh is not enough.
+6. For research workspaces, bind curated sources and/or ingest raw evidence, then run `workspace compile`.
+7. Use `workspace output` and `workspace answer` only after a successful compile so outputs have source-backed provenance.
+8. Prefer `autoCompileEnabled` plus targeted queue processing over broad global rebuilds.
+9. Escalate to `fetch <source-id>` or `fetch all` only for explicit maintenance or when due-based refresh is not enough.
 
 ## Operational notes
 
@@ -126,4 +139,4 @@ The `aiocs-mcp` server exposes the same curation operations without shell parsin
 - `~/.aiocs/sources` and bundled repo sources behave the same once bootstrapped into the catalog.
 - Targeted refresh is the default. Broad refresh is a maintenance task, not a normal answering step.
 - Use `aiocs` for read/search flows and this skill only for catalog mutation.
-- Workspace compilation uses LM Studio and expects the configured model to be loaded before `workspace compile` or `workspace output`.
+- Workspace compilation uses LM Studio and expects the configured model to be loaded before `workspace compile`, `workspace output`, or `workspace answer`.

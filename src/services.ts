@@ -1,9 +1,10 @@
-import { resolve } from 'node:path';
+import { basename, extname, resolve } from 'node:path';
 
 import { exportBackup, importBackup } from './backup.js';
 import { openCatalog } from './catalog/catalog.js';
+import { sha256 } from './catalog/fingerprint.js';
 import { verifyCoverageAgainstReferences, type CoverageVerificationResult } from './coverage.js';
-import { AiocsError, AIOCS_ERROR_CODES } from './errors.js';
+import { AiocsError, AIOCS_ERROR_CODES, toAiocsError } from './errors.js';
 import { resolveProjectScope } from './catalog/project-scope.js';
 import { bootstrapSourceSpecs } from './daemon.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
@@ -17,12 +18,16 @@ import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config
 import { uniqueResolvedPaths } from './spec/source-spec-files.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 import { compileWorkspace as compileWorkspaceRun } from './workspace/compile.js';
-import { generateWorkspaceOutput as generateWorkspaceOutputRun } from './workspace/output.js';
+import { answerWorkspaceQuestion as answerWorkspaceQuestionRun, generateWorkspaceOutput as generateWorkspaceOutputRun } from './workspace/output.js';
 import { lintWorkspace as lintWorkspaceRun } from './workspace/lint.js';
-import { deleteWorkspaceArtifact, deleteWorkspaceManifest, readWorkspaceArtifact } from './workspace/storage.js';
+import { analyzeWorkspaceStatus } from './workspace/status.js';
+import { enqueueWorkspaceCompileIfEligible, processQueuedWorkspaceCompileJobs } from './workspace/queue.js';
+import { extractImageInput, extractMarkdownDirectoryInput, extractPdfInput } from './workspace/raw-inputs.js';
+import { deleteWorkspaceArtifact, deleteWorkspaceManifest, deleteWorkspacePath, copyPathIntoWorkspace, readWorkspaceArtifact, writeWorkspaceArtifact } from './workspace/storage.js';
 import { resolveWorkspaceCompilerProfile } from './workspace/compiler-profile.js';
-import { getWorkspaceIndexPath } from './workspace/artifacts.js';
-import type { WorkspaceOutputFormat } from './workspace/types.js';
+import { getWorkspaceAnswerPath, getWorkspaceIndexPath } from './workspace/artifacts.js';
+import { syncWorkspaceToObsidian as syncWorkspaceToObsidianRun } from './workspace/sync.js';
+import type { WorkspaceAnswerFormat, WorkspaceOutputFormat, WorkspaceRawInputKind } from './workspace/types.js';
 
 export type SearchOptions = {
   source: string[];
@@ -54,6 +59,8 @@ type CatalogContext = {
 
 const workspaceSearchScopes = new Set<WorkspaceSearchScope>(['source', 'derived', 'mixed']);
 const workspaceOutputFormats = new Set<WorkspaceOutputFormat>(['report', 'slides', 'summary']);
+const workspaceAnswerFormats = new Set<WorkspaceAnswerFormat>(['report', 'slides', 'summary', 'note']);
+const workspaceRawInputKinds = new Set<WorkspaceRawInputKind>(['markdown-dir', 'pdf', 'image']);
 
 function createCatalog(): CatalogContext {
   const dataDir = getAiocsDataDir();
@@ -93,6 +100,86 @@ function assertWorkspaceOutputFormat(value: string): WorkspaceOutputFormat {
     AIOCS_ERROR_CODES.invalidArgument,
     'workspace output format must be one of: report, slides, summary',
   );
+}
+
+function assertWorkspaceAnswerFormat(value: string): WorkspaceAnswerFormat {
+  if (workspaceAnswerFormats.has(value as WorkspaceAnswerFormat)) {
+    return value as WorkspaceAnswerFormat;
+  }
+
+  throw new AiocsError(
+    AIOCS_ERROR_CODES.invalidArgument,
+    'workspace answer format must be one of: report, slides, summary, note',
+  );
+}
+
+function assertWorkspaceRawInputKind(value: string): WorkspaceRawInputKind {
+  if (workspaceRawInputKinds.has(value as WorkspaceRawInputKind)) {
+    return value as WorkspaceRawInputKind;
+  }
+
+  throw new AiocsError(
+    AIOCS_ERROR_CODES.invalidArgument,
+    'workspace raw input kind must be one of: markdown-dir, pdf, image',
+  );
+}
+
+async function processPostRefreshWorkspaceCompiles(input: {
+  catalog: ReturnType<typeof openCatalog>;
+  dataDir: string;
+  refreshedSourceIds: string[];
+}): Promise<void> {
+  const changedSourceIds = [...new Set(input.refreshedSourceIds.filter(Boolean))];
+  if (changedSourceIds.length > 0) {
+    const workspaceIds = input.catalog.listAutoCompileWorkspaceIdsForSources(changedSourceIds);
+    for (const workspaceId of workspaceIds) {
+      enqueueWorkspaceCompileIfEligible({
+        catalog: input.catalog,
+        workspaceId,
+        sourceIds: changedSourceIds,
+      });
+    }
+  }
+
+  await processQueuedWorkspaceCompileJobs({
+    catalog: input.catalog,
+    dataDir: input.dataDir,
+  });
+}
+
+function slugifySegment(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || 'input';
+}
+
+function buildWorkspaceRawInputId(input: {
+  kind: WorkspaceRawInputKind;
+  sourcePath: string;
+}): string {
+  const fingerprint = sha256(resolve(input.sourcePath)).slice(0, 10);
+  const stem = basename(input.sourcePath, extname(input.sourcePath));
+  return `${input.kind}-${slugifySegment(stem)}-${fingerprint}`;
+}
+
+function buildWorkspaceRawStoragePath(input: {
+  kind: WorkspaceRawInputKind;
+  rawInputId: string;
+  sourcePath: string;
+}): string {
+  if (input.kind === 'markdown-dir') {
+    return `raw/${input.rawInputId}`;
+  }
+
+  const fileName = basename(resolve(input.sourcePath));
+  return `raw/${input.rawInputId}/${fileName}`;
+}
+
+function renderRawInputExtractedText(chunks: Array<{ markdown: string }>): string {
+  return chunks.map((chunk) => chunk.markdown.trim()).filter(Boolean).join('\n\n').trim();
 }
 
 function assertWorkspaceOutputFormats(values: string[] | undefined): WorkspaceOutputFormat[] | undefined {
@@ -173,6 +260,13 @@ export async function fetchSources(sourceIdOrAll: string): Promise<{
       catalog,
       config: getHybridRuntimeConfig(),
     });
+    await processPostRefreshWorkspaceCompiles({
+      catalog,
+      dataDir,
+      refreshedSourceIds: fetched
+        .filter((entry) => entry.reused === false)
+        .map((entry) => entry.sourceId),
+    });
     return fetched;
   });
 
@@ -216,6 +310,13 @@ export async function refreshDueSources(sourceIdOrAll = 'all'): Promise<{
     await processEmbeddingJobs({
       catalog,
       config: getHybridRuntimeConfig(),
+    });
+    await processPostRefreshWorkspaceCompiles({
+      catalog,
+      dataDir,
+      refreshedSourceIds: fetched
+        .filter((entry) => entry.reused === false)
+        .map((entry) => entry.sourceId),
     });
 
     return fetched;
@@ -348,6 +449,7 @@ export async function createWorkspace(input: {
   label: string;
   purpose?: string;
   defaultOutputFormats?: string[];
+  autoCompileEnabled?: boolean;
 }): Promise<{
   workspace: ReturnType<ReturnType<typeof openCatalog>['createWorkspace']>;
 }> {
@@ -358,6 +460,23 @@ export async function createWorkspace(input: {
     ...(input.purpose ? { purpose: input.purpose } : {}),
     compilerProfile: resolveWorkspaceCompilerProfile(),
     defaultOutputFormats: defaultOutputFormats ?? ['report', 'slides'],
+    ...(typeof input.autoCompileEnabled === 'boolean'
+      ? { autoCompileEnabled: input.autoCompileEnabled }
+      : {}),
+  }));
+
+  return { workspace };
+}
+
+export async function updateWorkspaceSettings(input: {
+  workspaceId: string;
+  autoCompileEnabled: boolean;
+}): Promise<{
+  workspace: ReturnType<ReturnType<typeof openCatalog>['updateWorkspaceAutoCompile']>;
+}> {
+  const workspace = await withCatalog(({ catalog }) => catalog.updateWorkspaceAutoCompile({
+    workspaceId: input.workspaceId,
+    autoCompileEnabled: input.autoCompileEnabled,
   }));
 
   return { workspace };
@@ -379,6 +498,14 @@ export async function bindWorkspaceSources(input: {
 }> {
   await withCatalog(({ catalog }) => {
     catalog.bindWorkspaceSources(input.workspaceId, input.sourceIds);
+    const workspace = catalog.getWorkspace(input.workspaceId);
+    if (workspace?.autoCompileEnabled) {
+      enqueueWorkspaceCompileIfEligible({
+        catalog,
+        workspaceId: input.workspaceId,
+        sourceIds: input.sourceIds,
+      });
+    }
   });
 
   return {
@@ -394,9 +521,10 @@ export async function unbindWorkspaceSources(input: {
   workspaceId: string;
   sourceIds: string[];
 }> {
+  let removedSourceIds: string[] = [];
   await withCatalog(async ({ catalog, dataDir }) => {
     const existingBindings = catalog.listWorkspaceSourceBindings(input.workspaceId).map((binding) => binding.sourceId);
-    const removedSourceIds = input.sourceIds && input.sourceIds.length > 0
+    removedSourceIds = input.sourceIds && input.sourceIds.length > 0
       ? [...new Set(input.sourceIds)]
       : existingBindings;
 
@@ -427,11 +555,20 @@ export async function unbindWorkspaceSources(input: {
       workspaceId: input.workspaceId,
       fileName: 'compile-state.json',
     });
+
+    const workspace = catalog.getWorkspace(input.workspaceId);
+    if (workspace?.autoCompileEnabled) {
+      enqueueWorkspaceCompileIfEligible({
+        catalog,
+        workspaceId: input.workspaceId,
+        sourceIds: removedSourceIds,
+      });
+    }
   });
 
   return {
     workspaceId: input.workspaceId,
-    sourceIds: input.sourceIds ?? [],
+    sourceIds: removedSourceIds,
   };
 }
 
@@ -473,6 +610,14 @@ export async function getWorkspaceStatus(workspaceId: string): Promise<{
   bindings: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceSourceBindings']>;
   artifacts: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifacts']>;
   compileRuns: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceCompileRuns']>;
+  compileJob: ReturnType<ReturnType<typeof openCatalog>['getWorkspaceCompileJob']>;
+  rawInputs: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceRawInputs']>;
+  syncTargets: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceSyncTargets']>;
+  questionRuns: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceQuestionRuns']>;
+  links: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifactLinks']>;
+  graph: ReturnType<typeof analyzeWorkspaceStatus>['graph'];
+  lintSummary: ReturnType<typeof analyzeWorkspaceStatus>['lintSummary'];
+  health: ReturnType<typeof analyzeWorkspaceStatus>['health'];
 }> {
   return withCatalog(({ catalog }) => {
     const workspace = catalog.getWorkspace(workspaceId);
@@ -483,11 +628,20 @@ export async function getWorkspaceStatus(workspaceId: string): Promise<{
       );
     }
 
+    const analysis = analyzeWorkspaceStatus({ catalog, workspaceId });
     return {
       workspace,
       bindings: catalog.listWorkspaceSourceBindings(workspaceId),
       artifacts: catalog.listWorkspaceArtifacts(workspaceId),
       compileRuns: catalog.listWorkspaceCompileRuns(workspaceId),
+      compileJob: catalog.getWorkspaceCompileJob(workspaceId),
+      rawInputs: catalog.listWorkspaceRawInputs(workspaceId),
+      syncTargets: catalog.listWorkspaceSyncTargets(workspaceId),
+      questionRuns: catalog.listWorkspaceQuestionRuns(workspaceId),
+      links: catalog.listWorkspaceArtifactLinks({ workspaceId }),
+      graph: analysis.graph,
+      lintSummary: analysis.lintSummary,
+      health: analysis.health,
     };
   });
 }
@@ -497,6 +651,7 @@ export async function compileWorkspaceArtifacts(workspaceId: string): Promise<{
   skipped: boolean;
   sourceFingerprint: string;
   changedSourceIds: string[];
+  changedRawInputIds: string[];
   updatedArtifactPaths: string[];
   artifactCount: number;
   compileRunId: string | null;
@@ -505,6 +660,17 @@ export async function compileWorkspaceArtifacts(workspaceId: string): Promise<{
     catalog,
     dataDir,
     workspaceId,
+  }));
+}
+
+export async function runQueuedWorkspaceCompiles(options?: {
+  maxJobs?: number;
+}): Promise<ReturnType<typeof processQueuedWorkspaceCompileJobs>> {
+  return withCatalog(({ catalog, dataDir }) => processQueuedWorkspaceCompileJobs({
+    catalog,
+    dataDir,
+    env: process.env,
+    ...(typeof options?.maxJobs === 'number' ? { maxJobs: options.maxJobs } : {}),
   }));
 }
 
@@ -672,6 +838,7 @@ export async function showWorkspaceArtifact(workspaceId: string, artifactPath: s
   artifact: NonNullable<ReturnType<ReturnType<typeof openCatalog>['getWorkspaceArtifact']>>;
   content: string;
   provenance: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifactProvenance']>;
+  rawInputProvenance: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifactRawInputProvenance']>;
 }> {
   return withCatalog(async ({ catalog, dataDir }) => {
     const artifact = catalog.getWorkspaceArtifact(workspaceId, artifactPath);
@@ -693,6 +860,7 @@ export async function showWorkspaceArtifact(workspaceId: string, artifactPath: s
       artifact,
       content: content.content,
       provenance: catalog.listWorkspaceArtifactProvenance(workspaceId, artifactPath),
+      rawInputProvenance: catalog.listWorkspaceArtifactRawInputProvenance(workspaceId, artifactPath),
     };
   });
 }
@@ -719,6 +887,307 @@ export async function generateWorkspaceArtifactOutput(input: {
     ...(input.name ? { name: input.name } : {}),
     ...(input.prompt ? { prompt: input.prompt } : {}),
   }));
+}
+
+export async function ingestWorkspaceRawInput(input: {
+  workspaceId: string;
+  kind: string;
+  sourcePath: string;
+  label?: string;
+}): Promise<{
+  workspaceId: string;
+  rawInput: ReturnType<ReturnType<typeof openCatalog>['upsertWorkspaceRawInput']>;
+}> {
+  const kind = assertWorkspaceRawInputKind(input.kind);
+  const sourcePath = resolve(input.sourcePath);
+  const rawInputId = buildWorkspaceRawInputId({ kind, sourcePath });
+
+  return withCatalog(async ({ catalog, dataDir }) => {
+    const workspace = catalog.getWorkspace(input.workspaceId);
+    if (!workspace) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceNotFound,
+        `Unknown workspace '${input.workspaceId}'`,
+      );
+    }
+
+    const extraction = kind === 'markdown-dir'
+      ? await extractMarkdownDirectoryInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
+      : kind === 'pdf'
+        ? await extractPdfInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
+        : await extractImageInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) });
+
+    const storagePath = buildWorkspaceRawStoragePath({
+      kind,
+      rawInputId,
+      sourcePath,
+    });
+    await copyPathIntoWorkspace({
+      dataDir,
+      workspaceId: input.workspaceId,
+      sourcePath,
+      targetPath: storagePath,
+    });
+
+    let extractedTextPath: string | null = null;
+    if (extraction.extractedTextPath) {
+      extractedTextPath = `raw/${rawInputId}/${extraction.extractedTextPath}`;
+      await writeWorkspaceArtifact({
+        dataDir,
+        workspaceId: input.workspaceId,
+        path: extractedTextPath,
+        content: `${renderRawInputExtractedText(extraction.chunks)}\n`,
+      });
+    }
+
+    const rawInput = catalog.upsertWorkspaceRawInput({
+      id: rawInputId,
+      workspaceId: input.workspaceId,
+      kind,
+      label: extraction.label,
+      sourcePath,
+      storagePath,
+      ...(extractedTextPath ? { extractedTextPath } : {}),
+      contentHash: extraction.contentHash,
+      metadata: extraction.metadata,
+      chunks: extraction.chunks,
+    });
+
+    if (workspace.autoCompileEnabled) {
+      enqueueWorkspaceCompileIfEligible({
+        catalog,
+        workspaceId: input.workspaceId,
+        rawInputIds: [rawInputId],
+      });
+    }
+
+    return {
+      workspaceId: input.workspaceId,
+      rawInput,
+    };
+  });
+}
+
+export async function listWorkspaceRawInputsRecord(workspaceId: string): Promise<{
+  workspaceId: string;
+  rawInputs: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceRawInputs']>;
+}> {
+  return withCatalog(({ catalog }) => {
+    const workspace = catalog.getWorkspace(workspaceId);
+    if (!workspace) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceNotFound,
+        `Unknown workspace '${workspaceId}'`,
+      );
+    }
+
+    return {
+      workspaceId,
+      rawInputs: catalog.listWorkspaceRawInputs(workspaceId),
+    };
+  });
+}
+
+export async function showWorkspaceRawInput(workspaceId: string, rawInputId: string): Promise<{
+  workspaceId: string;
+  rawInput: NonNullable<ReturnType<ReturnType<typeof openCatalog>['getWorkspaceRawInput']>>;
+  chunks: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceRawInputChunks']>;
+}> {
+  return withCatalog(({ catalog }) => {
+    const rawInput = catalog.getWorkspaceRawInput(workspaceId, rawInputId);
+    if (!rawInput) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.invalidArgument,
+        `Workspace raw input '${rawInputId}' not found in '${workspaceId}'`,
+      );
+    }
+
+    return {
+      workspaceId,
+      rawInput,
+      chunks: catalog.listWorkspaceRawInputChunks(workspaceId, rawInputId),
+    };
+  });
+}
+
+export async function removeWorkspaceRawInput(input: {
+  workspaceId: string;
+  rawInputId: string;
+}): Promise<{
+  workspaceId: string;
+  rawInputId: string;
+  deleted: boolean;
+}> {
+  return withCatalog(async ({ catalog, dataDir }) => {
+    const workspace = catalog.getWorkspace(input.workspaceId);
+    if (!workspace) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceNotFound,
+        `Unknown workspace '${input.workspaceId}'`,
+      );
+    }
+
+    const rawInput = catalog.getWorkspaceRawInput(input.workspaceId, input.rawInputId);
+    if (!rawInput) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.invalidArgument,
+        `Workspace raw input '${input.rawInputId}' not found in '${input.workspaceId}'`,
+      );
+    }
+
+    const artifactPaths = catalog.listWorkspaceArtifacts(input.workspaceId)
+      .filter((artifact) => catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, artifact.path)
+        .some((entry) => entry.rawInputId === input.rawInputId))
+      .map((artifact) => artifact.path);
+
+    catalog.deleteWorkspaceArtifacts({
+      workspaceId: input.workspaceId,
+      artifactPaths,
+    });
+    await Promise.all(artifactPaths.map((path) => deleteWorkspaceArtifact({
+      dataDir,
+      workspaceId: input.workspaceId,
+      path,
+    })));
+    await deleteWorkspacePath({
+      dataDir,
+      workspaceId: input.workspaceId,
+      path: rawInput.storagePath,
+    });
+    if (rawInput.extractedTextPath) {
+      await deleteWorkspaceArtifact({
+        dataDir,
+        workspaceId: input.workspaceId,
+        path: rawInput.extractedTextPath,
+      });
+    }
+    catalog.deleteWorkspaceRawInput(input.workspaceId, input.rawInputId);
+    await deleteWorkspaceManifest({
+      dataDir,
+      workspaceId: input.workspaceId,
+      fileName: 'compile-state.json',
+    });
+
+    if (workspace.autoCompileEnabled) {
+      enqueueWorkspaceCompileIfEligible({
+        catalog,
+        workspaceId: input.workspaceId,
+        rawInputIds: [input.rawInputId],
+      });
+    }
+
+    return {
+      workspaceId: input.workspaceId,
+      rawInputId: input.rawInputId,
+      deleted: true,
+    };
+  });
+}
+
+export async function searchWorkspaceRawInputCatalog(input: {
+  workspaceId: string;
+  query: string;
+  limit?: number;
+  offset?: number;
+  kinds?: string[];
+}): Promise<{
+  workspaceId: string;
+  query: string;
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  results: ReturnType<ReturnType<typeof openCatalog>['searchWorkspaceRawInputs']>['results'];
+}> {
+  const normalizedKinds = input.kinds?.map((kind) => assertWorkspaceRawInputKind(kind));
+  return withCatalog(({ catalog }) => {
+    const result = catalog.searchWorkspaceRawInputs({
+      workspaceId: input.workspaceId,
+      query: input.query,
+      ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
+      ...(typeof input.offset === 'number' ? { offset: input.offset } : {}),
+      ...(normalizedKinds && normalizedKinds.length > 0 ? { kinds: normalizedKinds } : {}),
+    });
+
+    return {
+      workspaceId: input.workspaceId,
+      query: input.query,
+      ...result,
+    };
+  });
+}
+
+export async function syncWorkspaceToObsidianVault(input: {
+  workspaceId: string;
+  vaultPath: string;
+  exportSubdir?: string;
+}): Promise<Awaited<ReturnType<typeof syncWorkspaceToObsidianRun>>> {
+  return withCatalog(({ catalog, dataDir }) => syncWorkspaceToObsidianRun({
+    catalog,
+    dataDir,
+    workspaceId: input.workspaceId,
+    vaultPath: input.vaultPath,
+    ...(input.exportSubdir ? { exportSubdir: input.exportSubdir } : {}),
+  }));
+}
+
+export async function answerWorkspace(input: {
+  workspaceId: string;
+  question: string;
+  format: string;
+  name?: string;
+}): Promise<{
+  workspaceId: string;
+  format: WorkspaceAnswerFormat;
+  path: string;
+  artifactCount: number;
+  questionRun: ReturnType<ReturnType<typeof openCatalog>['recordWorkspaceQuestionRun']>;
+}> {
+  const format = assertWorkspaceAnswerFormat(input.format);
+  const artifactPath = getWorkspaceAnswerPath(format, input.name);
+  return withCatalog(async ({ catalog, dataDir }) => {
+    try {
+      const result = await answerWorkspaceQuestionRun({
+        catalog,
+        dataDir,
+        workspaceId: input.workspaceId,
+        question: input.question,
+        format,
+        ...(input.name ? { name: input.name } : {}),
+        env: process.env,
+      });
+      const questionRun = catalog.recordWorkspaceQuestionRun({
+        workspaceId: input.workspaceId,
+        question: input.question,
+        format,
+        artifactPath,
+        status: 'success',
+      });
+      return {
+        ...result,
+        questionRun,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const questionRun = catalog.recordWorkspaceQuestionRun({
+        workspaceId: input.workspaceId,
+        question: input.question,
+        format,
+        artifactPath,
+        status: 'failed',
+        errorMessage: message,
+      });
+      const aiocsError = toAiocsError(error);
+      throw new AiocsError(
+        aiocsError.code,
+        aiocsError.message,
+        {
+          ...(aiocsError.details ? { originalDetails: aiocsError.details } : {}),
+          questionRunId: questionRun.id,
+        },
+      );
+    }
+  });
 }
 
 export async function searchCatalog(query: string, options: SearchOptions): Promise<{

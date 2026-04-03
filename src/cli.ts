@@ -33,27 +33,36 @@ import {
   initManagedSources,
   generateWorkspaceArtifactOutput,
   getWorkspaceStatus,
+  ingestWorkspaceRawInput,
   linkProjectSources,
   listWorkspaceArtifacts,
   listWorkspaceRecords,
+  listWorkspaceRawInputsRecord,
   listSnapshotsForSource,
   listSources,
   lintWorkspaceArtifacts,
+  answerWorkspace,
   runSourceCanaries,
   runEmbeddingWorker,
+  runQueuedWorkspaceCompiles,
   searchCatalog,
+  searchWorkspaceRawInputCatalog,
   searchWorkspaceCatalog,
   showChunk,
   showWorkspaceArtifact,
+  showWorkspaceRawInput,
+  syncWorkspaceToObsidianVault,
   type SearchOptions,
   type WorkspaceSearchOptions,
   unlinkProjectSources,
   unbindWorkspaceSources,
+  updateWorkspaceSettings,
   upsertSourceFromSpecFile,
   verifyCoverage,
   refreshDueSources,
   getManagedSourceSpecDirectories,
   bindWorkspaceSources,
+  removeWorkspaceRawInput,
 } from './services.js';
 
 type CommandResult<TData> = {
@@ -140,7 +149,7 @@ function renderWorkspaceSearchResult(
 
 function parsePositiveIntegerOption(
   value: string | undefined,
-  field: 'limit' | 'offset',
+  field: string,
 ): number | undefined {
   if (typeof value === 'undefined') {
     return undefined;
@@ -573,13 +582,14 @@ workspace
   .argument('<workspace-id>')
   .requiredOption('--label <label>', 'workspace label')
   .option('--purpose <purpose>', 'workspace purpose/description')
+  .option('--auto-compile', 'automatically recompile after bound-source or raw-input changes')
   .option('--output <format>', 'default output format', (value, current: string[]) => {
     current.push(value);
     return current;
   }, [])
   .action(async (
     workspaceId: string,
-    options: { label: string; purpose?: string; output?: string[] },
+    options: { label: string; purpose?: string; output?: string[]; autoCompile?: boolean },
     command: Command,
   ) => {
     await executeCommand(command, 'workspace.create', async () => {
@@ -587,11 +597,40 @@ workspace
         workspaceId,
         label: options.label,
         ...(options.purpose ? { purpose: options.purpose } : {}),
+        ...(options.autoCompile ? { autoCompileEnabled: true } : {}),
         ...(options.output && options.output.length > 0 ? { defaultOutputFormats: options.output as Array<'report' | 'slides' | 'summary'> } : {}),
       });
       return {
         data: result,
         human: `Created workspace ${result.workspace.id}`,
+      };
+    });
+  });
+
+workspace
+  .command('configure')
+  .argument('<workspace-id>')
+  .requiredOption('--auto-compile <enabled>', 'set workspace auto-compile to true or false')
+  .action(async (
+    workspaceId: string,
+    options: { autoCompile: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.configure', async () => {
+      const normalized = options.autoCompile.trim().toLowerCase();
+      if (normalized !== 'true' && normalized !== 'false') {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.invalidArgument,
+          '--auto-compile must be true or false',
+        );
+      }
+      const result = await updateWorkspaceSettings({
+        workspaceId,
+        autoCompileEnabled: normalized === 'true',
+      });
+      return {
+        data: result,
+        human: `Updated ${workspaceId}: autoCompile=${result.workspace.autoCompileEnabled}`,
       };
     });
   });
@@ -662,6 +701,7 @@ workspace
           : [
               `Compiled ${workspaceId}`,
               `Changed sources: ${result.changedSourceIds.join(', ') || '(none)'}`,
+              `Changed raw inputs: ${result.changedRawInputIds.join(', ') || '(none)'}`,
               ...result.updatedArtifactPaths.map((path) => `- ${path}`),
             ],
       };
@@ -678,7 +718,32 @@ workspace
         data: result,
         human: [
           `${result.workspace.id} | ${result.workspace.label}`,
-          `Bindings=${result.bindings.length} | Artifacts=${result.artifacts.length} | Runs=${result.compileRuns.length}`,
+          `Bindings=${result.bindings.length} | RawInputs=${result.rawInputs.length} | Artifacts=${result.artifacts.length} | Runs=${result.compileRuns.length}`,
+          `AutoCompile=${result.workspace.autoCompileEnabled} | Health=${result.health.status} | PendingJobs=${result.health.pendingCompileJobs} | FailedJobs=${result.health.failedCompileJobs}`,
+          `Links=${result.graph.linkCount} | BrokenLinks=${result.graph.brokenLinkCount} | Orphans=${result.graph.orphanArtifactCount}`,
+        ],
+      };
+    });
+  });
+
+workspace
+  .command('queue-run')
+  .option('--max-jobs <count>', 'maximum queued workspace compile jobs to process')
+  .action(async (
+    options: { maxJobs?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.queue-run', async () => {
+      const maxJobs = parsePositiveIntegerOption(options.maxJobs, 'max-jobs');
+      const result = await runQueuedWorkspaceCompiles({
+        ...(typeof maxJobs === 'number' ? { maxJobs } : {}),
+      });
+      return {
+        data: result,
+        human: [
+          `Processed ${result.processedJobs} workspace compile job(s)`,
+          ...result.succeededJobs.map((job) => `success | ${job.workspaceId} | sources=${job.changedSourceIds.length} | raw=${job.changedRawInputIds.length}`),
+          ...result.failedJobs.map((job) => `failed | ${job.workspaceId} | ${job.errorMessage}`),
         ],
       };
     });
@@ -765,6 +830,130 @@ workspaceArtifact
     });
   });
 
+const workspaceIngest = workspace.command('ingest');
+
+workspaceIngest
+  .command('add')
+  .argument('<workspace-id>')
+  .argument('<kind>')
+  .argument('<path>')
+  .option('--label <label>', 'display label for the raw input')
+  .action(async (
+    workspaceId: string,
+    kind: string,
+    path: string,
+    options: { label?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.ingest.add', async () => {
+      const result = await ingestWorkspaceRawInput({
+        workspaceId,
+        kind,
+        sourcePath: path,
+        ...(options.label ? { label: options.label } : {}),
+      });
+      return {
+        data: result,
+        human: `Ingested ${result.rawInput.kind} ${result.rawInput.id} into ${workspaceId}`,
+      };
+    });
+  });
+
+workspaceIngest
+  .command('list')
+  .argument('<workspace-id>')
+  .action(async (workspaceId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.ingest.list', async () => {
+      const result = await listWorkspaceRawInputsRecord(workspaceId);
+      return {
+        data: result,
+        human: result.rawInputs.length === 0
+          ? `No raw inputs for ${workspaceId}`
+          : result.rawInputs.map((rawInput) => [
+              rawInput.id,
+              rawInput.kind,
+              rawInput.label,
+              `chunks=${rawInput.chunkCount}`,
+            ].join(' | ')),
+      };
+    });
+  });
+
+workspaceIngest
+  .command('show')
+  .argument('<workspace-id>')
+  .argument('<raw-input-id>')
+  .action(async (workspaceId: string, rawInputId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.ingest.show', async () => {
+      const result = await showWorkspaceRawInput(workspaceId, rawInputId);
+      return {
+        data: result,
+        human: [
+          `${result.rawInput.id} | ${result.rawInput.kind} | ${result.rawInput.label}`,
+          ...result.chunks.map((chunk) => `${chunk.section_title} | ${chunk.file_path ?? '(root)'}`),
+        ],
+      };
+    });
+  });
+
+workspaceIngest
+  .command('search')
+  .argument('<workspace-id>')
+  .argument('<query>')
+  .option('--kind <kind>', 'raw input kind filter', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--limit <count>', 'maximum number of results to return')
+  .option('--offset <count>', 'number of results to skip')
+  .action(async (
+    workspaceId: string,
+    query: string,
+    options: { kind?: string[]; limit?: string; offset?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.ingest.search', async () => {
+      const limit = parsePositiveIntegerOption(options.limit, 'limit');
+      const offset = parsePositiveIntegerOption(options.offset, 'offset');
+      const result = await searchWorkspaceRawInputCatalog({
+        workspaceId,
+        query,
+        ...(options.kind && options.kind.length > 0 ? { kinds: options.kind } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+        ...(typeof offset === 'number' ? { offset } : {}),
+      });
+      return {
+        data: result,
+        human: result.results.length === 0
+          ? `No raw-input matches for "${query}"`
+          : [
+              `Showing ${result.offset + 1}-${result.offset + result.results.length} of ${result.total} raw-input result(s)`,
+              ...result.results.map((entry) => [
+                entry.rawInputId,
+                entry.kind,
+                entry.label,
+                entry.sectionTitle,
+                entry.filePath ?? '(root)',
+              ].join(' | ')),
+            ],
+      };
+    });
+  });
+
+workspaceIngest
+  .command('remove')
+  .argument('<workspace-id>')
+  .argument('<raw-input-id>')
+  .action(async (workspaceId: string, rawInputId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.ingest.remove', async () => {
+      const result = await removeWorkspaceRawInput({ workspaceId, rawInputId });
+      return {
+        data: result,
+        human: `Removed raw input ${rawInputId} from ${workspaceId}`,
+      };
+    });
+  });
+
 workspace
   .command('lint')
   .argument('<workspace-id>')
@@ -803,6 +992,58 @@ workspace
       return {
         data: result,
         human: `Generated ${result.format} at ${result.path}`,
+      };
+    });
+  });
+
+workspace
+  .command('answer')
+  .argument('<workspace-id>')
+  .argument('<format>')
+  .argument('<question>')
+  .option('--name <name>', 'output file slug')
+  .action(async (
+    workspaceId: string,
+    format: string,
+    question: string,
+    options: { name?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.answer', async () => {
+      const result = await answerWorkspace({
+        workspaceId,
+        format,
+        question,
+        ...(options.name ? { name: options.name } : {}),
+      });
+      return {
+        data: result,
+        human: `Answered into ${result.path} (${result.format})`,
+      };
+    });
+  });
+
+const workspaceSync = workspace.command('sync');
+workspaceSync
+  .command('obsidian')
+  .argument('<workspace-id>')
+  .argument('<vault-path>')
+  .option('--export-subdir <subdir>', 'vault subdirectory to sync into')
+  .action(async (
+    workspaceId: string,
+    vaultPath: string,
+    options: { exportSubdir?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.sync.obsidian', async () => {
+      const result = await syncWorkspaceToObsidianVault({
+        workspaceId,
+        vaultPath,
+        ...(options.exportSubdir ? { exportSubdir: options.exportSubdir } : {}),
+      });
+      return {
+        data: result,
+        human: `Synced ${workspaceId} to ${result.targetPath}`,
       };
     });
   });

@@ -10,8 +10,10 @@ import {
   writeWorkspaceManifest,
 } from './storage.js';
 import { compileWithLmStudio, LMSTUDIO_SANITIZER_VERSION } from './lmstudio.js';
-import type { WorkspaceCompilerProfile } from './types.js';
+import type { WorkspaceArtifactLinkInput, WorkspaceCompilerProfile } from './types.js';
 import {
+  extractWorkspaceLinks,
+  getRawInputArtifactBundle,
   getSourceArtifactBundle,
   getWorkspaceIndexPath,
   listWorkspaceOutputArtifactPaths,
@@ -25,6 +27,23 @@ type ResolvedWorkspaceSource = {
   snapshotId: string;
 };
 
+type ResolvedWorkspaceRawInput = {
+  rawInputId: string;
+  contentHash: string;
+};
+
+export type WorkspaceCompileContext = {
+  workspace: NonNullable<ReturnType<Catalog['getWorkspace']>>;
+  bindings: ReturnType<Catalog['listWorkspaceSourceBindings']>;
+  rawInputs: ReturnType<Catalog['listWorkspaceRawInputs']>;
+  latestSnapshots: ReturnType<Catalog['listLatestSnapshots']>;
+  sourceIds: string[];
+  rawInputIds: string[];
+  eligible: boolean;
+  ineligibleReason: 'no-inputs' | 'missing-snapshots' | null;
+  missingSourceIds: string[];
+};
+
 type ArtifactRender = {
   path: string;
   kind: 'summary' | 'concept' | 'index';
@@ -35,15 +54,21 @@ type ArtifactRender = {
     chunkIds: number[];
   }>;
   compilerMetadata: Record<string, unknown>;
+  rawInputProvenance?: Array<{
+    rawInputId: string;
+    chunkIds: number[];
+  }>;
+  links?: WorkspaceArtifactLinkInput[];
 };
 
-const WORKSPACE_COMPILE_RECIPE_VERSION = 'workspace-compile-v2';
+const WORKSPACE_COMPILE_RECIPE_VERSION = 'workspace-compile-v3';
 
 export type WorkspaceCompileResult = {
   workspaceId: string;
   skipped: boolean;
   sourceFingerprint: string;
   changedSourceIds: string[];
+  changedRawInputIds: string[];
   updatedArtifactPaths: string[];
   artifactCount: number;
   compileRunId: string | null;
@@ -62,10 +87,73 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function resolveWorkspaceCompileContext(input: {
+  catalog: Catalog;
+  workspaceId: string;
+}): WorkspaceCompileContext {
+  const workspace = input.catalog.getWorkspace(input.workspaceId);
+  if (!workspace) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.workspaceNotFound,
+      `Unknown workspace '${input.workspaceId}'`,
+    );
+  }
+
+  const bindings = input.catalog.listWorkspaceSourceBindings(input.workspaceId);
+  const rawInputs = input.catalog.listWorkspaceRawInputs(input.workspaceId);
+  const sourceIds = bindings.map((binding) => binding.sourceId);
+  const rawInputIds = rawInputs.map((rawInput) => rawInput.id);
+
+  if (sourceIds.length === 0 && rawInputIds.length === 0) {
+    return {
+      workspace,
+      bindings,
+      rawInputs,
+      latestSnapshots: [],
+      sourceIds,
+      rawInputIds,
+      eligible: false,
+      ineligibleReason: 'no-inputs',
+      missingSourceIds: [],
+    };
+  }
+
+  const latestSnapshots = input.catalog.listLatestSnapshots(sourceIds);
+  const resolvedIds = new Set(latestSnapshots.map((snapshot) => snapshot.sourceId));
+  const missingSourceIds = sourceIds.filter((sourceId) => !resolvedIds.has(sourceId));
+
+  if (missingSourceIds.length > 0) {
+    return {
+      workspace,
+      bindings,
+      rawInputs,
+      latestSnapshots,
+      sourceIds,
+      rawInputIds,
+      eligible: false,
+      ineligibleReason: 'missing-snapshots',
+      missingSourceIds,
+    };
+  }
+
+  return {
+    workspace,
+    bindings,
+    rawInputs,
+    latestSnapshots,
+    sourceIds,
+    rawInputIds,
+    eligible: true,
+    ineligibleReason: null,
+    missingSourceIds: [],
+  };
+}
+
 function computeSourceFingerprint(
   workspaceId: string,
   compilerProfile: Record<string, unknown>,
   sources: ResolvedWorkspaceSource[],
+  rawInputs: ResolvedWorkspaceRawInput[],
 ): string {
   return sha256(stableStringify({
     workspaceId,
@@ -75,12 +163,13 @@ function computeSourceFingerprint(
     },
     compilerProfile,
     sources,
+    rawInputs,
   }));
 }
 
 function buildEvidenceMarkdown(input: {
-  sourceId: string;
-  snapshotId: string;
+  sourceLabel: string;
+  revisionLabel: string;
   chunks: Array<{
     chunkId: number;
     pageTitle: string;
@@ -104,8 +193,8 @@ function buildEvidenceMarkdown(input: {
   for (const chunk of input.chunks) {
     const header = [
       `## Evidence Chunk ${chunk.chunkId}`,
-      `Source: ${input.sourceId}`,
-      `Snapshot: ${input.snapshotId}`,
+      `Source: ${input.sourceLabel}`,
+      `Revision: ${input.revisionLabel}`,
       `Title: ${chunk.pageTitle}`,
       `Section: ${chunk.sectionTitle}`,
       `Kind: ${chunk.pageKind}`,
@@ -137,7 +226,7 @@ function buildEvidenceMarkdown(input: {
   if (sections.length === 0) {
     throw new AiocsError(
       AIOCS_ERROR_CODES.invalidArgument,
-      `Workspace source '${input.sourceId}' has no usable evidence chunks for snapshot '${input.snapshotId}'`,
+      `Workspace evidence '${input.sourceLabel}' has no usable chunks for revision '${input.revisionLabel}'`,
     );
   }
 
@@ -148,12 +237,12 @@ function buildEvidenceMarkdown(input: {
 }
 
 function buildSummaryPrompt(input: {
-  sourceId: string;
-  snapshotId: string;
+  label: string;
+  revisionLabel: string;
   evidenceMarkdown: string;
 }): string {
   return [
-    `Create a Markdown summary artifact for source ${input.sourceId} at snapshot ${input.snapshotId}.`,
+    `Create a Markdown summary artifact for workspace input ${input.label} at revision ${input.revisionLabel}.`,
     'Requirements:',
     '- Output valid Markdown only.',
     '- Do not include reasoning, analysis, `<think>` blocks, or channel/control tokens.',
@@ -169,12 +258,12 @@ function buildSummaryPrompt(input: {
 }
 
 function buildConceptPrompt(input: {
-  sourceId: string;
-  snapshotId: string;
+  label: string;
+  revisionLabel: string;
   evidenceMarkdown: string;
 }): string {
   return [
-    `Create a Markdown concept page for source ${input.sourceId} at snapshot ${input.snapshotId}.`,
+    `Create a Markdown concept page for workspace input ${input.label} at revision ${input.revisionLabel}.`,
     'Requirements:',
     '- Output valid Markdown only.',
     '- Do not include reasoning, analysis, `<think>` blocks, or channel/control tokens.',
@@ -230,20 +319,31 @@ function wrapArtifactContent(content: string, workspaceId: string, relatedPaths:
 
 async function renderSourceArtifacts(input: {
   workspaceId: string;
-  sourceId: string;
-  snapshotId: string;
+  label: string;
+  revisionLabel: string;
+  summaryTitle: string;
+  conceptTitle: string;
+  summaryPath: string;
+  conceptPath: string;
   evidenceMarkdown: string;
-  chunkIds: number[];
   compilerProfile: WorkspaceCompilerProfile;
+  provenance: Array<{
+    sourceId: string;
+    snapshotId: string;
+    chunkIds: number[];
+  }>;
+  rawInputProvenance?: Array<{
+    rawInputId: string;
+    chunkIds: number[];
+  }>;
   env?: NodeJS.ProcessEnv | undefined;
 }): Promise<ArtifactRender[]> {
-  const bundle = getSourceArtifactBundle(input.sourceId);
   const summary = await compileWithLmStudio({
     profile: input.compilerProfile,
     systemPrompt: 'You maintain a provenance-backed local research wiki. Return only the final Markdown document. Never emit reasoning, analysis, tool traces, <think> tags, or channel/control tokens.',
     userPrompt: buildSummaryPrompt({
-      sourceId: input.sourceId,
-      snapshotId: input.snapshotId,
+      label: input.label,
+      revisionLabel: input.revisionLabel,
       evidenceMarkdown: input.evidenceMarkdown,
     }),
     ...(input.env ? { env: input.env } : {}),
@@ -252,8 +352,8 @@ async function renderSourceArtifacts(input: {
     profile: input.compilerProfile,
     systemPrompt: 'You maintain a provenance-backed local research wiki. Return only the final Markdown document. Never emit reasoning, analysis, tool traces, <think> tags, or channel/control tokens.',
     userPrompt: buildConceptPrompt({
-      sourceId: input.sourceId,
-      snapshotId: input.snapshotId,
+      label: input.label,
+      revisionLabel: input.revisionLabel,
       evidenceMarkdown: input.evidenceMarkdown,
     }),
     ...(input.env ? { env: input.env } : {}),
@@ -261,46 +361,60 @@ async function renderSourceArtifacts(input: {
 
   return [
     {
-      path: bundle.summaryPath,
+      path: input.summaryPath,
       kind: 'summary',
       content: wrapArtifactContent(
-        ensureLeadingTitle(summary.content, `${input.sourceId} Summary`),
+        ensureLeadingTitle(summary.content, input.summaryTitle),
         input.workspaceId,
-        ['derived/index.md', bundle.conceptPath],
+        ['derived/index.md', input.conceptPath],
       ),
-      provenance: [
-        {
-          sourceId: input.sourceId,
-          snapshotId: input.snapshotId,
-          chunkIds: input.chunkIds,
-        },
-      ],
+      provenance: input.provenance,
+      ...(input.rawInputProvenance ? { rawInputProvenance: input.rawInputProvenance } : {}),
       compilerMetadata: {
         provider: 'lmstudio',
         model: summary.model,
         promptKind: 'summary',
       },
+      links: buildArtifactLinks(
+        input.summaryPath,
+        wrapArtifactContent(
+          ensureLeadingTitle(summary.content, input.summaryTitle),
+          input.workspaceId,
+          ['derived/index.md', input.conceptPath],
+        ),
+        [
+          { toPath: 'derived/index.md', relationKind: 'related_to', anchorText: 'derived/index.md' },
+          { toPath: input.conceptPath, relationKind: 'summary_of', anchorText: input.conceptPath },
+        ],
+      ),
     },
     {
-      path: bundle.conceptPath,
+      path: input.conceptPath,
       kind: 'concept',
       content: wrapArtifactContent(
-        ensureLeadingTitle(concepts.content, `${input.sourceId} Concepts`),
+        ensureLeadingTitle(concepts.content, input.conceptTitle),
         input.workspaceId,
-        ['derived/index.md', bundle.summaryPath],
+        ['derived/index.md', input.summaryPath],
       ),
-      provenance: [
-        {
-          sourceId: input.sourceId,
-          snapshotId: input.snapshotId,
-          chunkIds: input.chunkIds,
-        },
-      ],
+      provenance: input.provenance,
+      ...(input.rawInputProvenance ? { rawInputProvenance: input.rawInputProvenance } : {}),
       compilerMetadata: {
         provider: 'lmstudio',
         model: concepts.model,
         promptKind: 'concept',
       },
+      links: buildArtifactLinks(
+        input.conceptPath,
+        wrapArtifactContent(
+          ensureLeadingTitle(concepts.content, input.conceptTitle),
+          input.workspaceId,
+          ['derived/index.md', input.summaryPath],
+        ),
+        [
+          { toPath: 'derived/index.md', relationKind: 'related_to', anchorText: 'derived/index.md' },
+          { toPath: input.summaryPath, relationKind: 'concept_of', anchorText: input.summaryPath },
+        ],
+      ),
     },
   ];
 }
@@ -310,6 +424,11 @@ async function buildIndexArtifact(input: {
   workspaceId: string;
   sourceIds: string[];
   latestSnapshots: Map<string, string>;
+  rawInputs: Array<{
+    id: string;
+    label: string;
+    contentHash: string;
+  }>;
 }): Promise<ArtifactRender> {
   const sections = await Promise.all(input.sourceIds.map(async (sourceId) => {
     const bundle = getSourceArtifactBundle(sourceId);
@@ -322,6 +441,24 @@ async function buildIndexArtifact(input: {
     return {
       sourceId,
       snapshotId: input.latestSnapshots.get(sourceId) ?? null,
+      summaryPath: bundle.summaryPath,
+      conceptPath: bundle.conceptPath,
+      preview: summary.content.split('\n').slice(0, 6).join('\n').trim(),
+    };
+  }));
+
+  const rawSections = await Promise.all(input.rawInputs.map(async (rawInput) => {
+    const bundle = getRawInputArtifactBundle(rawInput.id);
+    const summary = await readWorkspaceArtifact({
+      dataDir: input.dataDir,
+      workspaceId: input.workspaceId,
+      path: bundle.summaryPath,
+    });
+
+    return {
+      rawInputId: rawInput.id,
+      label: rawInput.label,
+      contentHash: rawInput.contentHash,
       summaryPath: bundle.summaryPath,
       conceptPath: bundle.conceptPath,
       preview: summary.content.split('\n').slice(0, 6).join('\n').trim(),
@@ -342,7 +479,37 @@ async function buildIndexArtifact(input: {
       section.preview || '_No preview available._',
       '',
     ]),
+    ...(rawSections.length > 0
+      ? [
+          '## Raw Inputs',
+          ...rawSections.flatMap((section) => [
+            `### ${section.label}`,
+            `- Raw Input ID: ${section.rawInputId}`,
+            `- Content Hash: ${section.contentHash}`,
+            `- [Summary](${section.summaryPath})`,
+            `- [Concepts](${section.conceptPath})`,
+            '',
+            '#### Preview',
+            section.preview || '_No preview available._',
+            '',
+          ]),
+        ]
+      : []),
   ].join('\n');
+
+  const links: WorkspaceArtifactLinkInput[] = [];
+  for (const section of sections) {
+    links.push(
+      { fromPath: getWorkspaceIndexPath(), toPath: section.summaryPath, relationKind: 'index_entry', anchorText: section.summaryPath },
+      { fromPath: getWorkspaceIndexPath(), toPath: section.conceptPath, relationKind: 'index_entry', anchorText: section.conceptPath },
+    );
+  }
+  for (const section of rawSections) {
+    links.push(
+      { fromPath: getWorkspaceIndexPath(), toPath: section.summaryPath, relationKind: 'index_entry', anchorText: section.summaryPath },
+      { fromPath: getWorkspaceIndexPath(), toPath: section.conceptPath, relationKind: 'index_entry', anchorText: section.conceptPath },
+    );
+  }
 
   return {
     path: getWorkspaceIndexPath(),
@@ -357,10 +524,15 @@ async function buildIndexArtifact(input: {
           }]
         : []
     )),
+    rawInputProvenance: rawSections.map((section) => ({
+      rawInputId: section.rawInputId,
+      chunkIds: [],
+    })),
     compilerMetadata: {
       provider: 'deterministic',
       promptKind: 'index',
     },
+    links: buildArtifactLinks(getWorkspaceIndexPath(), content, links),
   };
 }
 
@@ -406,6 +578,82 @@ function changedSourcesFromArtifactPaths(paths: string[]): string[] {
   }))].sort();
 }
 
+function artifactPathsForRawInput(rawInputId: string): string[] {
+  const bundle = getRawInputArtifactBundle(rawInputId);
+  return [bundle.conceptPath, bundle.summaryPath];
+}
+
+function listArtifactPathsForRawInputChanges(
+  workspaceId: string,
+  catalog: Catalog,
+  rawInputs: ResolvedWorkspaceRawInput[],
+): string[] {
+  const paths: string[] = [];
+  for (const rawInput of rawInputs) {
+    const bundle = getRawInputArtifactBundle(rawInput.rawInputId);
+    for (const path of [bundle.summaryPath, bundle.conceptPath]) {
+      const artifact = catalog.getWorkspaceArtifact(workspaceId, path);
+      if (!artifact) {
+        paths.push(path);
+        continue;
+      }
+
+      const provenance = catalog.listWorkspaceArtifactRawInputProvenance(workspaceId, path);
+      if (!provenance.some((entry) => entry.rawInputId === rawInput.rawInputId)) {
+        paths.push(path);
+      }
+    }
+  }
+
+  return [...new Set(paths)];
+}
+
+function changedRawInputsFromArtifactPaths(paths: string[]): string[] {
+  return [...new Set(paths.flatMap((path) => {
+    const summaryMatch = path.match(/^derived\/raw\/([^/]+)\/summary\.md$/);
+    if (summaryMatch?.[1]) {
+      return [summaryMatch[1]];
+    }
+
+    const conceptMatch = path.match(/^derived\/raw\/([^/]+)\/concept\.md$/);
+    return conceptMatch?.[1] ? [conceptMatch[1]] : [];
+  }))].sort();
+}
+
+function buildArtifactLinks(
+  fromPath: string,
+  content: string,
+  relationLinks: Array<Omit<WorkspaceArtifactLinkInput, 'fromPath'>> = [],
+): WorkspaceArtifactLinkInput[] {
+  const links: WorkspaceArtifactLinkInput[] = extractWorkspaceLinks(fromPath, content).map((link) => ({
+    fromPath,
+    toPath: link.targetPath,
+    relationKind: 'explicit_link',
+    anchorText: link.anchorText,
+    source: 'deterministic',
+    broken: false,
+  }));
+
+  for (const relation of relationLinks) {
+    links.push({
+      fromPath,
+      ...relation,
+      source: relation.source ?? 'deterministic',
+      broken: relation.broken ?? false,
+    });
+  }
+
+  const deduped = new Map<string, WorkspaceArtifactLinkInput>();
+  for (const link of links) {
+    deduped.set(
+      `${link.fromPath}::${link.toPath}::${link.relationKind}::${link.source ?? 'deterministic'}`,
+      link,
+    );
+  }
+
+  return [...deduped.values()];
+}
+
 export async function compileWorkspace(input: {
   catalog: Catalog;
   dataDir: string;
@@ -417,48 +665,57 @@ export async function compileWorkspace(input: {
     workspaceId: input.workspaceId,
   });
 
-  const workspace = input.catalog.getWorkspace(input.workspaceId);
-  if (!workspace) {
+  const compileContext = resolveWorkspaceCompileContext({
+    catalog: input.catalog,
+    workspaceId: input.workspaceId,
+  });
+  const workspace = compileContext.workspace;
+  const bindings = compileContext.bindings;
+  const rawInputs = compileContext.rawInputs;
+  if (!compileContext.eligible && compileContext.ineligibleReason === 'no-inputs') {
     throw new AiocsError(
-      AIOCS_ERROR_CODES.workspaceNotFound,
-      `Unknown workspace '${input.workspaceId}'`,
+      AIOCS_ERROR_CODES.invalidArgument,
+      `Workspace '${input.workspaceId}' has no bound sources or raw inputs`,
     );
   }
 
-  const bindings = input.catalog.listWorkspaceSourceBindings(input.workspaceId);
-  if (bindings.length === 0) {
+  if (!compileContext.eligible && compileContext.ineligibleReason === 'missing-snapshots') {
     throw new AiocsError(
       AIOCS_ERROR_CODES.invalidArgument,
-      `Workspace '${input.workspaceId}' has no bound sources`,
+      `Workspace '${input.workspaceId}' has bound sources without snapshots: ${compileContext.missingSourceIds.join(', ')}`,
     );
   }
-
-  const latestSnapshots = input.catalog.listLatestSnapshots(bindings.map((binding) => binding.sourceId));
-  if (latestSnapshots.length !== bindings.length) {
-    const resolvedIds = new Set(latestSnapshots.map((snapshot) => snapshot.sourceId));
-    const missing = bindings
-      .map((binding) => binding.sourceId)
-      .filter((sourceId) => !resolvedIds.has(sourceId));
-    throw new AiocsError(
-      AIOCS_ERROR_CODES.invalidArgument,
-      `Workspace '${input.workspaceId}' has bound sources without snapshots: ${missing.join(', ')}`,
-    );
-  }
+  const latestSnapshots = compileContext.latestSnapshots;
 
   const sortedSnapshots = [...latestSnapshots].sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+  const sortedRawInputs = rawInputs
+    .map((rawInput) => ({
+      rawInputId: rawInput.id,
+      contentHash: rawInput.contentHash,
+    }))
+    .sort((left, right) => left.rawInputId.localeCompare(right.rawInputId));
   const effectiveCompilerProfile = resolveEffectiveWorkspaceCompilerProfile(workspace.compilerProfile, input.env);
   const sourceFingerprint = computeSourceFingerprint(
     input.workspaceId,
     effectiveCompilerProfile,
     sortedSnapshots,
+    sortedRawInputs,
   );
 
-  let artifactPathsToRefresh = listArtifactPathsForSourceChanges(
-    input.workspaceId,
-    input.catalog,
-    sortedSnapshots,
-  );
+  let artifactPathsToRefresh = [
+    ...listArtifactPathsForSourceChanges(
+      input.workspaceId,
+      input.catalog,
+      sortedSnapshots,
+    ),
+    ...listArtifactPathsForRawInputChanges(
+      input.workspaceId,
+      input.catalog,
+      sortedRawInputs,
+    ),
+  ];
   let changedSourceIds = changedSourcesFromArtifactPaths(artifactPathsToRefresh);
+  let changedRawInputIds = changedRawInputsFromArtifactPaths(artifactPathsToRefresh);
   const lastRun = input.catalog.listWorkspaceCompileRuns(input.workspaceId)[0] ?? null;
   const indexPath = getWorkspaceIndexPath();
   if (
@@ -466,17 +723,27 @@ export async function compileWorkspace(input: {
     && lastRun.status === 'success'
     && lastRun.sourceFingerprint !== sourceFingerprint
     && changedSourceIds.length === 0
+    && changedRawInputIds.length === 0
   ) {
     changedSourceIds = sortedSnapshots.map((snapshot) => snapshot.sourceId);
-    artifactPathsToRefresh = changedSourceIds.flatMap((sourceId) => artifactPathsForSource(sourceId));
+    changedRawInputIds = sortedRawInputs.map((rawInput) => rawInput.rawInputId);
+    artifactPathsToRefresh = [
+      ...changedSourceIds.flatMap((sourceId) => artifactPathsForSource(sourceId)),
+      ...changedRawInputIds.flatMap((rawInputId) => artifactPathsForRawInput(rawInputId)),
+    ];
   }
-  const needsIndexRefresh = changedSourceIds.length > 0 || !input.catalog.getWorkspaceArtifact(input.workspaceId, indexPath);
+  const needsIndexRefresh = (
+    changedSourceIds.length > 0
+    || changedRawInputIds.length > 0
+    || !input.catalog.getWorkspaceArtifact(input.workspaceId, indexPath)
+  );
 
   if (
     lastRun
     && lastRun.status === 'success'
     && lastRun.sourceFingerprint === sourceFingerprint
     && changedSourceIds.length === 0
+    && changedRawInputIds.length === 0
     && !needsIndexRefresh
   ) {
     return {
@@ -484,6 +751,7 @@ export async function compileWorkspace(input: {
       skipped: true,
       sourceFingerprint,
       changedSourceIds: [],
+      changedRawInputIds: [],
       updatedArtifactPaths: [],
       artifactCount: input.catalog.listWorkspaceArtifacts(input.workspaceId).length,
       compileRunId: null,
@@ -492,7 +760,8 @@ export async function compileWorkspace(input: {
 
   const updatedArtifactPaths = new Set<string>();
   const latestSnapshotMap = new Map(sortedSnapshots.map((snapshot) => [snapshot.sourceId, snapshot.snapshotId]));
-  const outputArtifactPathsToInvalidate = needsIndexRefresh || changedSourceIds.length > 0
+  const rawInputMap = new Map(rawInputs.map((rawInput) => [rawInput.id, rawInput]));
+  const outputArtifactPathsToInvalidate = needsIndexRefresh || changedSourceIds.length > 0 || changedRawInputIds.length > 0
     ? listWorkspaceOutputArtifactPaths(input.catalog, input.workspaceId)
     : [];
 
@@ -506,7 +775,6 @@ export async function compileWorkspace(input: {
     }
 
     for (const sourceId of changedSourceIds) {
-      const bundle = getSourceArtifactBundle(sourceId);
       input.catalog.setWorkspaceArtifactsStale({
         workspaceId: input.workspaceId,
         artifactPaths: artifactPathsForSource(sourceId),
@@ -526,26 +794,37 @@ export async function compileWorkspace(input: {
         snapshotId,
       });
       const evidence = buildEvidenceMarkdown({
-        sourceId,
-        snapshotId,
+        sourceLabel: sourceId,
+        revisionLabel: snapshotId,
         chunks,
         maxInputChars: effectiveCompilerProfile.maxInputChars,
       });
+      const bundle = getSourceArtifactBundle(sourceId);
       const rendered = await renderSourceArtifacts({
         workspaceId: input.workspaceId,
-        sourceId,
-        snapshotId,
-      evidenceMarkdown: evidence.markdown,
-      chunkIds: evidence.chunkIds,
-      compilerProfile: effectiveCompilerProfile,
-      ...(input.env ? { env: input.env } : {}),
-    });
+        label: sourceId,
+        revisionLabel: snapshotId,
+        summaryTitle: `${sourceId} Summary`,
+        conceptTitle: `${sourceId} Concepts`,
+        summaryPath: bundle.summaryPath,
+        conceptPath: bundle.conceptPath,
+        evidenceMarkdown: evidence.markdown,
+        compilerProfile: effectiveCompilerProfile,
+        provenance: [
+          {
+            sourceId,
+            snapshotId,
+            chunkIds: evidence.chunkIds,
+          },
+        ],
+        ...(input.env ? { env: input.env } : {}),
+      });
 
       for (const artifact of rendered) {
         await writeWorkspaceArtifact({
           dataDir: input.dataDir,
           workspaceId: input.workspaceId,
-        path: artifact.path,
+          path: artifact.path,
           content: artifact.content,
         });
         input.catalog.upsertWorkspaceArtifact({
@@ -564,12 +843,99 @@ export async function compileWorkspace(input: {
             },
           ],
           provenance: artifact.provenance,
+          ...(artifact.rawInputProvenance ? { rawInputProvenance: artifact.rawInputProvenance } : {}),
+          ...(artifact.links ? { links: artifact.links } : {}),
         });
         updatedArtifactPaths.add(artifact.path);
       }
     }
 
-    if (needsIndexRefresh || changedSourceIds.length > 0) {
+    for (const rawInputId of changedRawInputIds) {
+      input.catalog.setWorkspaceArtifactsStale({
+        workspaceId: input.workspaceId,
+        artifactPaths: artifactPathsForRawInput(rawInputId),
+        stale: true,
+      });
+
+      const rawInput = rawInputMap.get(rawInputId);
+      if (!rawInput) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.invalidArgument,
+          `Workspace '${input.workspaceId}' is missing raw input '${rawInputId}'`,
+        );
+      }
+
+      const chunks = input.catalog.listWorkspaceRawInputChunks(input.workspaceId, rawInputId).map((chunk) => ({
+        chunkId: chunk.id,
+        pageTitle: rawInput.label,
+        sectionTitle: chunk.section_title,
+        markdown: chunk.markdown,
+        pageUrl: `workspace://raw/${rawInputId}`,
+        filePath: chunk.file_path,
+        language: chunk.file_path?.endsWith('.md') || chunk.file_path?.endsWith('.mdx') ? 'markdown' : null,
+        pageKind: 'file' as const,
+      }));
+      const evidence = buildEvidenceMarkdown({
+        sourceLabel: rawInput.label,
+        revisionLabel: rawInput.contentHash,
+        chunks,
+        maxInputChars: effectiveCompilerProfile.maxInputChars,
+      });
+      const bundle = getRawInputArtifactBundle(rawInputId);
+      const rendered = await renderSourceArtifacts({
+        workspaceId: input.workspaceId,
+        label: rawInput.label,
+        revisionLabel: rawInput.contentHash,
+        summaryTitle: `${rawInput.label} Summary`,
+        conceptTitle: `${rawInput.label} Concepts`,
+        summaryPath: bundle.summaryPath,
+        conceptPath: bundle.conceptPath,
+        evidenceMarkdown: evidence.markdown,
+        compilerProfile: effectiveCompilerProfile,
+        provenance: [],
+        rawInputProvenance: [
+          {
+            rawInputId,
+            chunkIds: evidence.chunkIds,
+          },
+        ],
+        ...(input.env ? { env: input.env } : {}),
+      });
+
+      for (const artifact of rendered) {
+        await writeWorkspaceArtifact({
+          dataDir: input.dataDir,
+          workspaceId: input.workspaceId,
+          path: artifact.path,
+          content: artifact.content,
+        });
+        input.catalog.upsertWorkspaceArtifact({
+          workspaceId: input.workspaceId,
+          path: artifact.path,
+          kind: artifact.kind,
+          contentHash: sha256(artifact.content),
+          compilerMetadata: {
+            ...artifact.compilerMetadata,
+            rawInputId,
+          },
+          stale: false,
+          chunks: [
+            {
+              sectionTitle: artifact.kind === 'summary'
+                ? `${rawInput.label} summary`
+                : `${rawInput.label} concepts`,
+              markdown: artifact.content,
+            },
+          ],
+          provenance: [],
+          ...(artifact.rawInputProvenance ? { rawInputProvenance: artifact.rawInputProvenance } : {}),
+          ...(artifact.links ? { links: artifact.links } : {}),
+        });
+        updatedArtifactPaths.add(artifact.path);
+      }
+    }
+
+    if (needsIndexRefresh || changedSourceIds.length > 0 || changedRawInputIds.length > 0) {
       input.catalog.setWorkspaceArtifactsStale({
         workspaceId: input.workspaceId,
         artifactPaths: [indexPath],
@@ -581,6 +947,11 @@ export async function compileWorkspace(input: {
         workspaceId: input.workspaceId,
         sourceIds: sortedSnapshots.map((snapshot) => snapshot.sourceId),
         latestSnapshots: latestSnapshotMap,
+        rawInputs: rawInputs.map((rawInput) => ({
+          id: rawInput.id,
+          label: rawInput.label,
+          contentHash: rawInput.contentHash,
+        })),
       });
       await writeWorkspaceArtifact({
         dataDir: input.dataDir,
@@ -602,6 +973,8 @@ export async function compileWorkspace(input: {
           },
         ],
         provenance: indexArtifact.provenance,
+        ...(indexArtifact.rawInputProvenance ? { rawInputProvenance: indexArtifact.rawInputProvenance } : {}),
+        ...(indexArtifact.links ? { links: indexArtifact.links } : {}),
       });
       updatedArtifactPaths.add(indexArtifact.path);
     }
@@ -614,9 +987,11 @@ export async function compileWorkspace(input: {
         workspaceId: input.workspaceId,
         sourceFingerprint,
         changedSourceIds,
+        changedRawInputIds,
         updatedArtifactPaths: [...updatedArtifactPaths].sort(),
         compiledAt: new Date().toISOString(),
         sources: sortedSnapshots,
+        rawInputs: sortedRawInputs,
       },
     });
 
@@ -632,6 +1007,7 @@ export async function compileWorkspace(input: {
       skipped: false,
       sourceFingerprint,
       changedSourceIds,
+      changedRawInputIds,
       updatedArtifactPaths: [...updatedArtifactPaths].sort(),
       artifactCount: input.catalog.listWorkspaceArtifacts(input.workspaceId).length,
       compileRunId: compileRun.runId,

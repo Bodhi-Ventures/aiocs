@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -197,6 +197,189 @@ describe('workspace catalog', () => {
           chunkIds: [chunk!.chunkId],
         }),
       ]);
+    } finally {
+      catalog.close();
+    }
+  });
+
+  it('tracks auto-compile jobs, raw inputs, links, sync targets, and question runs', () => {
+    const catalog = openCatalog({ dataDir: root });
+
+    try {
+      catalog.createWorkspace({
+        id: 'research-desk',
+        label: 'Research Desk',
+        compilerProfile: {
+          provider: 'lmstudio',
+          model: 'google/gemma-4-26b-a4b',
+          temperature: 0.1,
+          topP: 0.9,
+          maxInputChars: 12_000,
+          maxOutputTokens: 4_096,
+          concurrency: 1,
+        },
+        defaultOutputFormats: ['report'],
+        autoCompileEnabled: true,
+      });
+
+      expect(catalog.getWorkspace('research-desk')).toEqual(
+        expect.objectContaining({
+          autoCompileEnabled: true,
+        }),
+      );
+
+      catalog.updateWorkspaceAutoCompile({
+        workspaceId: 'research-desk',
+        autoCompileEnabled: false,
+      });
+      expect(catalog.getWorkspace('research-desk')).toEqual(
+        expect.objectContaining({
+          autoCompileEnabled: false,
+        }),
+      );
+
+      writeFileSync(join(root, 'paper.md'), '# Paper\n\nInteresting raw notes.');
+      const rawInput = catalog.upsertWorkspaceRawInput({
+        id: 'markdown-paper',
+        workspaceId: 'research-desk',
+        kind: 'markdown-dir',
+        label: 'Paper Notes',
+        sourcePath: join(root, 'paper.md'),
+        storagePath: 'raw/markdown-paper',
+        contentHash: 'raw-hash',
+        metadata: {
+          absolutePath: join(root, 'paper.md'),
+        },
+        chunks: [
+          {
+            sectionTitle: 'Paper',
+            markdown: '# Paper\n\nInteresting raw notes.',
+            filePath: 'paper.md',
+          },
+        ],
+      });
+      expect(rawInput.chunkCount).toBe(1);
+      expect(catalog.listWorkspaceRawInputs('research-desk')).toHaveLength(1);
+      expect(catalog.searchWorkspaceRawInputs({
+        workspaceId: 'research-desk',
+        query: 'interesting raw notes',
+      }).results).toEqual([
+        expect.objectContaining({
+          rawInputId: 'markdown-paper',
+          label: 'Paper Notes',
+        }),
+      ]);
+
+      catalog.upsertWorkspaceArtifact({
+        workspaceId: 'research-desk',
+        path: 'derived/raw/markdown-paper/summary.md',
+        kind: 'summary',
+        contentHash: 'artifact-hash',
+        compilerMetadata: {
+          provider: 'lmstudio',
+          promptKind: 'summary',
+        },
+        stale: false,
+        chunks: [
+          {
+            sectionTitle: 'Summary',
+            markdown: '# Summary\n\nCompiled raw summary.',
+          },
+        ],
+        provenance: [],
+        rawInputProvenance: [
+          {
+            rawInputId: 'markdown-paper',
+            chunkIds: [1],
+          },
+        ],
+        links: [
+          {
+            fromPath: 'derived/raw/markdown-paper/summary.md',
+            toPath: 'derived/index.md',
+            relationKind: 'index_entry',
+            anchorText: 'derived/index.md',
+          },
+        ],
+      });
+
+      expect(catalog.listWorkspaceArtifactRawInputProvenance('research-desk', 'derived/raw/markdown-paper/summary.md')).toEqual([
+        expect.objectContaining({
+          rawInputId: 'markdown-paper',
+          chunkIds: [1],
+        }),
+      ]);
+      expect(catalog.listWorkspaceArtifactLinks({
+        workspaceId: 'research-desk',
+        artifactPath: 'derived/raw/markdown-paper/summary.md',
+        direction: 'outgoing',
+      })).toEqual([
+        expect.objectContaining({
+          fromPath: 'derived/raw/markdown-paper/summary.md',
+          toPath: 'derived/index.md',
+          relationKind: 'index_entry',
+        }),
+      ]);
+
+      const queued = catalog.enqueueWorkspaceCompile({
+        workspaceId: 'research-desk',
+        rawInputIds: ['markdown-paper'],
+        requestedFingerprint: 'fp-1',
+      });
+      expect(queued).toEqual(
+        expect.objectContaining({
+          status: 'pending',
+          requestedRawInputIds: ['markdown-paper'],
+          requestedFingerprint: 'fp-1',
+        }),
+      );
+      const claimed = catalog.claimNextWorkspaceCompileJob();
+      expect(claimed).toEqual(
+        expect.objectContaining({
+          workspaceId: 'research-desk',
+          status: 'running',
+        }),
+      );
+      catalog.completeWorkspaceCompileJob({
+        workspaceId: 'research-desk',
+        completedFingerprint: 'fp-1',
+      });
+      expect(catalog.getWorkspaceCompileJob('research-desk')).toEqual(
+        expect.objectContaining({
+          status: 'succeeded',
+          requestedFingerprint: 'fp-1',
+        }),
+      );
+
+      catalog.upsertWorkspaceSyncTarget({
+        workspaceId: 'research-desk',
+        kind: 'obsidian',
+        targetPath: '/vault',
+        exportSubdir: 'aiocs/research-desk',
+        lastSyncedAt: '2026-04-03T00:00:00.000Z',
+        lastSyncStatus: 'success',
+      });
+      expect(catalog.listWorkspaceSyncTargets('research-desk')).toEqual([
+        expect.objectContaining({
+          kind: 'obsidian',
+          targetPath: '/vault',
+        }),
+      ]);
+
+      const questionRun = catalog.recordWorkspaceQuestionRun({
+        workspaceId: 'research-desk',
+        question: 'Summarize the raw notes',
+        format: 'note',
+        artifactPath: 'derived/notes/raw-notes.md',
+        status: 'success',
+      });
+      expect(questionRun).toEqual(
+        expect.objectContaining({
+          workspaceId: 'research-desk',
+          format: 'note',
+        }),
+      );
+      expect(catalog.listWorkspaceQuestionRuns('research-desk')).toHaveLength(1);
     } finally {
       catalog.close();
     }
