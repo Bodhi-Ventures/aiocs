@@ -1,6 +1,8 @@
 export const AIOCS_ERROR_CODES = {
   invalidArgument: 'INVALID_ARGUMENT',
   sourceNotFound: 'SOURCE_NOT_FOUND',
+  workspaceNotFound: 'WORKSPACE_NOT_FOUND',
+  workspaceArtifactNotFound: 'WORKSPACE_ARTIFACT_NOT_FOUND',
   snapshotNotFound: 'SNAPSHOT_NOT_FOUND',
   snapshotDiffBaseNotFound: 'SNAPSHOT_DIFF_BASE_NOT_FOUND',
   noPagesFetched: 'NO_PAGES_FETCHED',
