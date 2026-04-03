@@ -1,11 +1,6 @@
 {
   "artifacts": [
     {
-      "description": "Active, completed, and debt planning artifacts for long-running agent work.",
-      "name": "plans",
-      "path": "plans"
-    },
-    {
       "description": "Durable project documentation such as architecture notes, runbooks, and preserved decisions.",
       "name": "docs",
       "path": "docs"

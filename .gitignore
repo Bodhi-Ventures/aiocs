@@ -1,5 +1,6 @@
 .codex-artifacts/
 resources/
+plans/
 node_modules/
 dist/
 coverage/

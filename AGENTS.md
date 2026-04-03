@@ -15,5 +15,5 @@
 - Treat repo artifacts as durable memory. Do not rely on hidden session context.
 - Keep durable project documentation in `docs/`.
 - Keep local reference material in `resources/` and out of version control.
-- Keep active plans in `plans/active/`, completed plans in `plans/completed/`, and workflow debt in `plans/harness-debt.md`.
+- Keep local planning artifacts in `plans/` when needed, but do not commit them.
 - Register durable non-code context in `.socraticodecontextartifacts.json` when it should be recoverable across sessions.
