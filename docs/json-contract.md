@@ -54,6 +54,17 @@ All of these support the root-level `--json` flag:
 - `diff`
 - `project link`
 - `project unlink`
+- `workspace create`
+- `workspace list`
+- `workspace bind`
+- `workspace unbind`
+- `workspace compile`
+- `workspace status`
+- `workspace search`
+- `workspace artifact list`
+- `workspace artifact show`
+- `workspace lint`
+- `workspace output`
 - `backup export`
 - `backup import`
 - `embeddings status`
@@ -131,6 +142,7 @@ Check ids are currently:
 - `source-spec-dirs`
 - `freshness`
 - `daemon-heartbeat`
+- `lmstudio`
 - `embedding-provider`
 - `vector-store`
 - `embeddings`
@@ -242,6 +254,240 @@ Summary status values:
 {
   "projectPath": "/absolute/path/to/project",
   "sourceIds": ["hyperliquid", "lighter"]
+}
+```
+
+### Workspace commands
+
+Workspace commands manage derived wiki artifacts backed by canonical source snapshots and LM Studio compilation.
+
+#### `workspace.create`
+
+```json
+{
+  "workspace": {
+    "id": "market-structure",
+    "label": "Market Structure",
+    "compilerProfile": {
+      "provider": "lmstudio",
+      "model": "google/gemma-4-26b-a4b",
+      "temperature": 0.1,
+      "topP": 0.9,
+      "maxInputChars": 12000,
+      "maxOutputTokens": 4096,
+      "concurrency": 1
+    },
+    "defaultOutputFormats": ["report", "slides"]
+  }
+}
+```
+
+#### `workspace.list`
+
+```json
+{
+  "workspaces": [
+    {
+      "id": "market-structure",
+      "label": "Market Structure",
+      "bindingCount": 2,
+      "artifactCount": 5,
+      "lastCompileStatus": "success"
+    }
+  ]
+}
+```
+
+#### `workspace.bind` and `workspace.unbind`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "sourceIds": ["hyperliquid", "nktkas-hyperliquid"]
+}
+```
+
+#### `workspace.compile`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "skipped": false,
+  "sourceFingerprint": "sha256...",
+  "changedSourceIds": ["hyperliquid"],
+  "updatedArtifactPaths": [
+    "derived/sources/hyperliquid/summary.md",
+    "derived/concepts/hyperliquid.md",
+    "derived/index.md"
+  ],
+  "artifactCount": 3,
+  "compileRunId": "wrkcmp_..."
+}
+```
+
+#### `workspace.status`
+
+```json
+{
+  "workspace": {
+    "id": "market-structure",
+    "label": "Market Structure"
+  },
+  "bindings": [
+    {
+      "workspaceId": "market-structure",
+      "sourceId": "hyperliquid",
+      "createdAt": "2026-04-03T10:00:00.000Z"
+    }
+  ],
+  "artifacts": [
+    {
+      "workspaceId": "market-structure",
+      "path": "derived/index.md",
+      "kind": "index",
+      "stale": false,
+      "chunkCount": 3
+    }
+  ],
+  "compileRuns": [
+    {
+      "id": "wrkcmp_...",
+      "status": "success"
+    }
+  ]
+}
+```
+
+#### `workspace.search`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "query": "transport design",
+  "scope": "mixed",
+  "limit": 10,
+  "offset": 0,
+  "hasMore": false,
+  "modeRequested": "auto",
+  "modeUsed": "hybrid",
+  "total": 2,
+  "results": [
+    {
+      "kind": "source",
+      "scope": "source",
+      "chunkId": 42,
+      "sourceId": "nktkas-hyperliquid",
+      "snapshotId": "snp_...",
+      "pageUrl": "file://src/transports/websocket.ts",
+      "pageTitle": "src/transports/websocket.ts",
+      "sectionTitle": "WebSocketTransport",
+      "markdown": "...",
+      "pageKind": "file",
+      "filePath": "src/transports/websocket.ts",
+      "language": "typescript",
+      "score": 0.91,
+      "signals": ["lexical", "vector"]
+    },
+    {
+      "kind": "derived",
+      "scope": "derived",
+      "artifactPath": "derived/concepts/nktkas-hyperliquid.md",
+      "artifactKind": "concept",
+      "sectionTitle": "Transport design",
+      "markdown": "...",
+      "stale": false,
+      "score": 0.74
+    }
+  ]
+}
+```
+
+#### `workspace.artifact.list`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "artifacts": [
+    {
+      "workspaceId": "market-structure",
+      "path": "derived/index.md",
+      "kind": "index",
+      "stale": false,
+      "chunkCount": 3
+    }
+  ]
+}
+```
+
+#### `workspace.artifact.show`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "artifact": {
+    "workspaceId": "market-structure",
+    "path": "derived/index.md",
+    "kind": "index",
+    "stale": false
+  },
+  "content": "# Workspace Index\n...",
+  "provenance": [
+    {
+      "workspaceId": "market-structure",
+      "path": "derived/index.md",
+      "sourceId": "hyperliquid",
+      "snapshotId": "snp_...",
+      "chunkIds": [42, 43]
+    }
+  ]
+}
+```
+
+#### `workspace.lint`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "summary": {
+    "status": "warn",
+    "findingCount": 1,
+    "staleArtifactCount": 1,
+    "missingProvenanceCount": 0,
+    "missingArtifactCount": 0
+  },
+  "findings": [
+    {
+      "kind": "stale-artifact",
+      "severity": "warn",
+      "summary": "Artifact provenance points at an older snapshot.",
+      "artifactPath": "derived/sources/hyperliquid/summary.md"
+    }
+  ]
+}
+```
+
+#### `workspace.output`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "format": "report",
+  "path": "outputs/reports/weekly-brief.md",
+  "artifact": {
+    "workspaceId": "market-structure",
+    "path": "outputs/reports/weekly-brief.md",
+    "kind": "report",
+    "stale": false
+  },
+  "provenance": [
+    {
+      "workspaceId": "market-structure",
+      "path": "outputs/reports/weekly-brief.md",
+      "sourceId": "hyperliquid",
+      "snapshotId": "snp_...",
+      "chunkIds": [42, 43]
+    }
+  ]
 }
 ```
 
@@ -494,6 +740,11 @@ Current stable CLI error codes include:
 
 - `INVALID_ARGUMENT`
 - `SOURCE_NOT_FOUND`
+- `WORKSPACE_NOT_FOUND`
+- `WORKSPACE_ARTIFACT_NOT_FOUND`
+- `WORKSPACE_ARTIFACTS_STALE`
+- `WORKSPACE_COMPILER_CONFIG_INVALID`
+- `WORKSPACE_COMPILER_UNAVAILABLE`
 - `SNAPSHOT_NOT_FOUND`
 - `NO_PAGES_FETCHED`
 - `NO_PROJECT_SCOPE`

@@ -13,6 +13,7 @@ Local-only documentation fetch, versioning, and search CLI for AI agents.
 - diffs snapshots to show what changed between fetches
 - indexes heading-aware chunks in SQLite FTS5
 - adds optional hybrid retrieval with local Ollama embeddings and a dedicated Qdrant vector index
+- compiles derived research workspaces into Markdown wiki artifacts with LM Studio
 - links docs sources to local projects for scoped search
 - exports and imports manifest-backed backups for `~/.aiocs`
 
@@ -199,6 +200,49 @@ docs verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
+
+### Research workspaces
+
+`aiocs` can compile a derived workspace wiki on top of canonical source snapshots. Workspace artifacts are stored separately from fetched sources under `~/.aiocs/data/workspaces/<workspace-id>/` and keep provenance links back to source chunks.
+
+LM Studio is the v1 compiler runtime. Load `google/gemma-4-26b-a4b` in LM Studio, start the local API server, and make sure `doctor` can see it:
+
+```bash
+docs --json doctor
+```
+
+If LM Studio is running on a non-default host or model, override:
+
+```bash
+export AIOCS_LMSTUDIO_BASE_URL=ws://127.0.0.1:1234
+export AIOCS_LMSTUDIO_MODEL=google/gemma-4-26b-a4b
+```
+
+These environment overrides apply at runtime, including for already-created workspaces.
+
+Create, bind, compile, and search a workspace:
+
+```bash
+docs workspace create market-structure --label "Market Structure"
+docs workspace bind market-structure hyperliquid nktkas-hyperliquid
+docs workspace compile market-structure
+docs workspace status market-structure
+docs workspace search market-structure "transport and websocket design" --scope mixed
+docs workspace artifact list market-structure
+docs workspace artifact show market-structure derived/index.md
+docs workspace lint market-structure
+docs workspace output market-structure report --name weekly-brief
+docs workspace output market-structure slides --name weekly-brief
+```
+
+Workspace compile is incremental:
+
+- canonical source snapshots remain the source of truth
+- unchanged sources are skipped on later compiles
+- changed sources regenerate only their derived summaries/concepts plus the shared index
+- generated reports/slides keep provenance to the bound source snapshots
+
+If any bound source snapshot changes, rerun `docs workspace compile <workspace-id>` before `docs workspace output ...`. Output generation fails closed when required derived artifacts are stale.
 
 For agents, the intended decision order is:
 

@@ -9,24 +9,35 @@ import { packageDescription, packageName, packageVersion } from './runtime/packa
 import {
   backfillEmbeddings,
   clearEmbeddings,
+  compileWorkspaceArtifacts,
+  createWorkspace,
   diffSnapshotsForSource,
   exportCatalogBackup,
   fetchSources,
+  generateWorkspaceArtifactOutput,
   getEmbeddingStatus,
   getDoctorReport,
+  getWorkspaceStatus,
   importCatalogBackup,
   initManagedSources,
   linkProjectSources,
+  listWorkspaceArtifacts,
+  listWorkspaceRecords,
   listSnapshotsForSource,
   listSources,
+  lintWorkspaceArtifacts,
   refreshDueSources,
   runSourceCanaries,
   runEmbeddingWorker,
   searchCatalog,
+  searchWorkspaceCatalog,
   showChunk,
+  showWorkspaceArtifact,
   unlinkProjectSources,
+  unbindWorkspaceSources,
   upsertSourceFromSpecFile,
   verifyCoverage,
+  bindWorkspaceSources,
 } from './services.js';
 
 const doctorCheckSchema = z.object({
@@ -207,6 +218,102 @@ const embeddingStatusSchema = z.object({
   })),
 });
 
+const workspaceSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  purpose: z.string().nullable(),
+  compilerProfile: z.object({
+    provider: z.literal('lmstudio'),
+    model: z.string(),
+    temperature: z.number(),
+    topP: z.number(),
+    maxInputChars: z.number().int().positive(),
+    maxOutputTokens: z.number().int().positive(),
+    concurrency: z.number().int().positive(),
+  }),
+  defaultOutputFormats: z.array(z.enum(['report', 'slides', 'summary'])),
+  bindingCount: z.number().int().nonnegative(),
+  artifactCount: z.number().int().nonnegative(),
+  lastCompileRunId: z.string().nullable(),
+  lastCompileStatus: z.enum(['success', 'failed']).nullable(),
+  lastCompiledAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const workspaceBindingSchema = z.object({
+  workspaceId: z.string(),
+  sourceId: z.string(),
+  createdAt: z.string(),
+});
+
+const workspaceArtifactSchema = z.object({
+  workspaceId: z.string(),
+  path: z.string(),
+  kind: z.enum(['concept', 'summary', 'report', 'slides', 'image', 'index', 'note']),
+  contentHash: z.string(),
+  compilerMetadata: z.record(z.string(), z.unknown()),
+  stale: z.boolean(),
+  chunkCount: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const workspaceArtifactProvenanceSchema = z.object({
+  workspaceId: z.string(),
+  path: z.string(),
+  sourceId: z.string(),
+  snapshotId: z.string(),
+  chunkIds: z.array(z.number().int().nonnegative()),
+});
+
+const workspaceLintSchema = z.object({
+  workspaceId: z.string(),
+  summary: z.object({
+    status: z.enum(['pass', 'warn']),
+    findingCount: z.number().int().nonnegative(),
+    staleArtifactCount: z.number().int().nonnegative(),
+    missingProvenanceCount: z.number().int().nonnegative(),
+    missingArtifactCount: z.number().int().nonnegative(),
+  }),
+  findings: z.array(z.object({
+    kind: z.enum(['stale-artifact', 'missing-provenance', 'missing-artifact']),
+    severity: z.literal('warn'),
+    summary: z.string(),
+    artifactPath: z.string().optional(),
+    sourceId: z.string().optional(),
+  })),
+});
+
+const workspaceSearchResultSchema = z.union([
+  z.object({
+    kind: z.literal('source'),
+    scope: z.literal('source'),
+    chunkId: z.number().int().nonnegative(),
+    sourceId: z.string(),
+    snapshotId: z.string(),
+    pageUrl: z.string(),
+    pageTitle: z.string(),
+    sectionTitle: z.string(),
+    markdown: z.string(),
+    pageKind: z.enum(['document', 'file']),
+    filePath: z.string().nullable(),
+    language: z.string().nullable(),
+    score: z.number(),
+    signals: z.array(z.enum(['lexical', 'vector'])),
+  }),
+  z.object({
+    kind: z.literal('derived'),
+    scope: z.literal('derived'),
+    artifactPath: z.string(),
+    artifactKind: z.string(),
+    sectionTitle: z.string(),
+    markdown: z.string(),
+    stale: z.boolean(),
+    score: z.number(),
+  }),
+]);
+
 const server = new McpServer({
   name: packageName,
   version: packageVersion,
@@ -283,6 +390,44 @@ const toolHandlers: Record<string, ToolHandler> = {
     linkProjectSources(args.projectPath as string, args.sourceIds as string[]),
   project_unlink: async (args = {}) =>
     unlinkProjectSources(args.projectPath as string, (args.sourceIds as string[] | undefined) ?? []),
+  workspace_create: async (args = {}) => createWorkspace({
+    workspaceId: args.workspaceId as string,
+    label: args.label as string,
+    ...(typeof args.purpose === 'string' ? { purpose: args.purpose } : {}),
+    ...(Array.isArray(args.defaultOutputFormats) ? { defaultOutputFormats: args.defaultOutputFormats as Array<'report' | 'slides' | 'summary'> } : {}),
+  }),
+  workspace_list: async () => listWorkspaceRecords(),
+  workspace_bind: async (args = {}) => bindWorkspaceSources({
+    workspaceId: args.workspaceId as string,
+    sourceIds: args.sourceIds as string[],
+  }),
+  workspace_unbind: async (args = {}) => unbindWorkspaceSources({
+    workspaceId: args.workspaceId as string,
+    ...(Array.isArray(args.sourceIds) ? { sourceIds: args.sourceIds as string[] } : {}),
+  }),
+  workspace_compile: async (args = {}) => compileWorkspaceArtifacts(args.workspaceId as string),
+  workspace_status: async (args = {}) => getWorkspaceStatus(args.workspaceId as string),
+  workspace_search: async (args = {}) => searchWorkspaceCatalog(
+    args.workspaceId as string,
+    args.query as string,
+    {
+      ...(typeof args.scope === 'string' ? { scope: args.scope as 'source' | 'derived' | 'mixed' } : {}),
+      ...(Array.isArray(args.pathPatterns) ? { path: args.pathPatterns as string[] } : {}),
+      ...(Array.isArray(args.languages) ? { language: args.languages as string[] } : {}),
+      ...(typeof args.mode === 'string' ? { mode: args.mode as 'auto' | 'lexical' | 'hybrid' | 'semantic' } : {}),
+      ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+      ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+    },
+  ),
+  workspace_artifact_list: async (args = {}) => listWorkspaceArtifacts(args.workspaceId as string),
+  workspace_artifact_show: async (args = {}) => showWorkspaceArtifact(args.workspaceId as string, args.artifactPath as string),
+  workspace_lint: async (args = {}) => lintWorkspaceArtifacts(args.workspaceId as string),
+  workspace_output: async (args = {}) => generateWorkspaceArtifactOutput({
+    workspaceId: args.workspaceId as string,
+    format: args.format as 'report' | 'slides' | 'summary',
+    ...(typeof args.name === 'string' ? { name: args.name } : {}),
+    ...(typeof args.prompt === 'string' ? { prompt: args.prompt } : {}),
+  }),
   search: async (args = {}) => searchCatalog(args.query as string, {
     source: (args.sourceIds as string[] | undefined) ?? [],
     ...(typeof args.snapshotId === 'string' ? { snapshot: args.snapshotId } : {}),
@@ -567,6 +712,207 @@ registerAiocsTool(
     outputSchema: z.object({
       projectPath: z.string(),
       sourceIds: z.array(z.string()),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_create',
+  {
+    title: 'Workspace create',
+    description: 'Create or update a research workspace with the default LM Studio compiler profile.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      label: z.string(),
+      purpose: z.string().optional(),
+      defaultOutputFormats: z.array(z.enum(['report', 'slides', 'summary'])).optional(),
+    }),
+    outputSchema: z.object({
+      workspace: workspaceSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_list',
+  {
+    title: 'Workspace list',
+    description: 'List all research workspaces in the local aiocs catalog.',
+    outputSchema: z.object({
+      workspaces: z.array(workspaceSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_bind',
+  {
+    title: 'Workspace bind',
+    description: 'Bind one or more existing aiocs sources to a research workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      sourceIds: z.array(z.string()).min(1),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      sourceIds: z.array(z.string()),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_unbind',
+  {
+    title: 'Workspace unbind',
+    description: 'Unbind one or more sources from a research workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      sourceIds: z.array(z.string()).optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      sourceIds: z.array(z.string()),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_compile',
+  {
+    title: 'Workspace compile',
+    description: 'Compile or refresh derived workspace wiki artifacts from bound canonical sources.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      skipped: z.boolean(),
+      sourceFingerprint: z.string(),
+      changedSourceIds: z.array(z.string()),
+      updatedArtifactPaths: z.array(z.string()),
+      artifactCount: z.number().int().nonnegative(),
+      compileRunId: z.string().nullable(),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_status',
+  {
+    title: 'Workspace status',
+    description: 'Show workspace metadata, bindings, artifacts, and recent compile runs.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+    }),
+    outputSchema: z.object({
+      workspace: workspaceSchema,
+      bindings: z.array(workspaceBindingSchema),
+      artifacts: z.array(workspaceArtifactSchema),
+      compileRuns: z.array(z.object({
+        runId: z.string(),
+        workspaceId: z.string(),
+        status: z.enum(['success', 'failed']),
+        sourceFingerprint: z.string(),
+        artifactCount: z.number().int().nonnegative(),
+        errorMessage: z.string().nullable(),
+        startedAt: z.string(),
+        finishedAt: z.string(),
+      })),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_search',
+  {
+    title: 'Workspace search',
+    description: 'Search canonical source evidence, derived artifacts, or both within a research workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      query: z.string(),
+      scope: z.enum(['source', 'derived', 'mixed']).optional(),
+      pathPatterns: z.array(z.string()).optional(),
+      languages: z.array(z.string()).optional(),
+      mode: z.enum(['auto', 'lexical', 'hybrid', 'semantic']).optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      query: z.string(),
+      scope: z.enum(['source', 'derived', 'mixed']),
+      limit: z.number().int().positive(),
+      offset: z.number().int().nonnegative(),
+      hasMore: z.boolean(),
+      modeRequested: z.enum(['auto', 'lexical', 'hybrid', 'semantic']),
+      modeUsed: z.union([z.enum(['auto', 'lexical', 'hybrid', 'semantic']), z.literal('derived')]),
+      total: z.number().int().nonnegative(),
+      results: z.array(workspaceSearchResultSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_artifact_list',
+  {
+    title: 'Workspace artifact list',
+    description: 'List derived artifacts recorded for a workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      artifacts: z.array(workspaceArtifactSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_artifact_show',
+  {
+    title: 'Workspace artifact show',
+    description: 'Read a workspace artifact file together with its provenance metadata.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      artifactPath: z.string(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      artifact: workspaceArtifactSchema,
+      content: z.string(),
+      provenance: z.array(workspaceArtifactProvenanceSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_lint',
+  {
+    title: 'Workspace lint',
+    description: 'Lint a workspace for stale artifacts, missing provenance, and missing expected artifacts.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+    }),
+    outputSchema: workspaceLintSchema,
+  },
+);
+
+registerAiocsTool(
+  'workspace_output',
+  {
+    title: 'Workspace output',
+    description: 'Generate a report, slide deck, or summary artifact from a compiled workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      format: z.enum(['report', 'slides', 'summary']),
+      name: z.string().optional(),
+      prompt: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      format: z.enum(['report', 'slides', 'summary']),
+      path: z.string(),
+      artifactCount: z.number().int().nonnegative(),
     }),
   },
 );
