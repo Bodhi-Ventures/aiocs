@@ -42,12 +42,12 @@ describe('release assets', () => {
     });
   });
 
-  it('ships a license, user-facing docs, archived design artifacts, agent skill, and production agent config', () => {
+  it('ships a license, user-facing docs, agent skills, and production agent config', () => {
     const licensePath = join(repoRoot, 'LICENSE');
     const contractPath = join(repoRoot, 'docs', 'json-contract.md');
     const codexIntegrationPath = join(repoRoot, 'docs', 'codex-integration.md');
-    const archivedDesignPath = join(repoRoot, 'plans', 'completed', '2026-04-03-git-repo-sources-design.md');
     const skillPath = join(repoRoot, 'skills', 'aiocs', 'SKILL.md');
+    const curationSkillPath = join(repoRoot, 'skills', 'aiocs-curation', 'SKILL.md');
     const agentPath = join(repoRoot, 'agents', 'aiocs-docs-specialist.toml');
 
     expect(existsSync(licensePath)).toBe(true);
@@ -65,14 +65,17 @@ describe('release assets', () => {
     expect(codexIntegration).toContain('~/.codex/agents');
     expect(codexIntegration).not.toContain('ai-skills/');
 
-    expect(existsSync(archivedDesignPath)).toBe(true);
-    expect(readFileSync(archivedDesignPath, 'utf8')).toContain('Git Repo Sources Design');
-
     expect(existsSync(skillPath)).toBe(true);
     const skillBody = readFileSync(skillPath, 'utf8');
     expect(skillBody).toContain('aiocs');
     expect(skillBody).toContain('--json');
     expect(skillBody).toContain('aiocs-mcp');
+
+    expect(existsSync(curationSkillPath)).toBe(true);
+    const curationSkillBody = readFileSync(curationSkillPath, 'utf8');
+    expect(curationSkillBody).toContain('aiocs-curation');
+    expect(curationSkillBody).toContain('source upsert');
+    expect(curationSkillBody).toContain('refresh due');
 
     expect(existsSync(agentPath)).toBe(true);
     const agent = readFileSync(agentPath, 'utf8');
