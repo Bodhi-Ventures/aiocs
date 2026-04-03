@@ -5,6 +5,7 @@ Local-only documentation fetch, versioning, and search CLI for AI agents.
 ## What it does
 
 - fetches docs from websites with Playwright
+- snapshots curated external git repositories as shared local reference sources
 - supports authenticated sources via environment-backed headers and cookies
 - runs lightweight canaries to detect source drift before full refreshes
 - normalizes them into Markdown
@@ -119,8 +120,12 @@ Canonical global setup:
 
 ## Managed sources
 
-The open-source repo bundles `hyperliquid` in `sources/`. Additional machine-local source specs
-belong in `~/.aiocs/sources`.
+The open-source repo bundles both web and git sources in `sources/`:
+
+- `hyperliquid` for the public docs site
+- `nktkas-hyperliquid` for the `nktkas/hyperliquid` GitHub repository
+
+Additional machine-local source specs belong in `~/.aiocs/sources`.
 
 `docs init` bootstraps both managed locations, so source behavior is the same regardless of
 whether a spec lives in the repo or in `~/.aiocs/sources`.
@@ -177,6 +182,7 @@ Search and inspect results:
 
 ```bash
 docs search "maker flow" --source hyperliquid
+docs search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript
 docs search "maker flow" --source hyperliquid --mode lexical
 docs search "maker flow" --source hyperliquid --mode hybrid
 docs search "maker flow" --source hyperliquid --mode semantic
@@ -200,6 +206,34 @@ For agents, the intended decision order is:
 2. if the source exists and is due, run `refresh due <source-id>`
 3. if the source is missing but worth reusing, add a spec under `~/.aiocs/sources`, then upsert and refresh only that source
 4. avoid `fetch all` unless the user explicitly asks or the daemon is doing maintenance
+
+### Git repo sources
+
+`aiocs` supports first-class `kind: git` sources for curated external repositories that should be
+reused across multiple local projects.
+
+Example:
+
+```yaml
+kind: git
+id: nktkas-hyperliquid
+label: nktkas/hyperliquid Repo
+repo:
+  url: https://github.com/nktkas/hyperliquid.git
+  ref: main
+  include:
+    - README.md
+    - docs/**
+    - src/**
+  exclude:
+    - .github/**
+    - dist/**
+schedule:
+  everyHours: 24
+```
+
+Git source snapshots are commit-based, stored under the shared local catalog, and searchable with
+the same project linking, diffing, canary, and hybrid search flows as website docs.
 
 ### Hybrid search
 

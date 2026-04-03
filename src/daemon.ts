@@ -298,6 +298,7 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
       const result = await runSourceCanary({
         catalog: input.catalog,
         sourceId,
+        dataDir: input.dataDir,
         env: process.env,
       });
       canaried.push({

@@ -25,6 +25,7 @@ describe('fetchSource', () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const spec: SourceSpec = {
+      kind: 'web',
       id: 'selector-source',
       label: 'Selector Source',
       startUrls: [`${server.baseUrl}/selector/start`],
@@ -71,6 +72,7 @@ describe('fetchSource', () => {
     const catalog = openCatalog({ dataDir: root });
 
     const clipboardSpec: SourceSpec = {
+      kind: 'web',
       id: 'clipboard-source',
       label: 'Clipboard Source',
       startUrls: [`${server.baseUrl}/clipboard/start`],
@@ -99,6 +101,7 @@ describe('fetchSource', () => {
     };
 
     const readabilitySpec: SourceSpec = {
+      kind: 'web',
       id: 'readability-source',
       label: 'Readability Source',
       startUrls: [`${server.baseUrl}/readability/start`],
@@ -414,6 +417,7 @@ describe('fetchSource', () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const spec: SourceSpec = {
+      kind: 'web',
       id: 'selector-missing-source',
       label: 'Selector Missing Source',
       startUrls: [`${server.baseUrl}/selector-missing/start`],
@@ -456,6 +460,7 @@ describe('fetchSource', () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const spec: SourceSpec = {
+      kind: 'web',
       id: 'selector-gitbook-source',
       label: 'Selector GitBook Source',
       startUrls: [`${server.baseUrl}/selector-gitbook/start`],
@@ -498,6 +503,7 @@ describe('fetchSource', () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const spec: SourceSpec = {
+      kind: 'web',
       id: 'selector-raw-mirror-source',
       label: 'Selector Raw Mirror Source',
       startUrls: [`${server.baseUrl}/selector-raw-mirror/start`],
@@ -540,6 +546,7 @@ describe('fetchSource', () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });
     const spec: SourceSpec = {
+      kind: 'web',
       id: 'selector-prefer-html-raw-first-source',
       label: 'Selector Prefer Html Raw First Source',
       startUrls: [`${server.baseUrl}/selector-prefer-html-raw-first/start`],

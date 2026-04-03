@@ -106,8 +106,8 @@ This section documents the stable top-level `data` payload per command.
 {
   "summary": {
     "status": "healthy",
-    "checkCount": 10,
-    "passCount": 10,
+    "checkCount": 11,
+    "passCount": 11,
     "warnCount": 0,
     "failCount": 0
   },
@@ -125,6 +125,7 @@ This section documents the stable top-level `data` payload per command.
 Check ids are currently:
 
 - `catalog`
+- `git`
 - `playwright`
 - `daemon-config`
 - `source-spec-dirs`
@@ -158,9 +159,13 @@ Summary status values:
   "sources": [
     {
       "id": "hyperliquid",
+      "kind": "web",
+      "specPath": "/absolute/path/to/spec.yaml",
       "label": "Hyperliquid",
       "nextDueAt": "2026-03-26T12:00:00.000Z",
+      "isDue": false,
       "nextCanaryDueAt": "2026-03-26T06:00:00.000Z",
+      "isCanaryDue": false,
       "lastCheckedAt": "2026-03-26T10:00:00.000Z",
       "lastSuccessfulSnapshotAt": "2026-03-26T10:00:00.000Z",
       "lastSuccessfulSnapshotId": "snp_...",
@@ -256,7 +261,10 @@ Summary status values:
   "addedPages": [
     {
       "url": "https://example.dev/docs/new-page",
-      "title": "New page"
+      "title": "New page",
+      "pageKind": "document",
+      "filePath": null,
+      "language": null
     }
   ],
   "removedPages": [],
@@ -265,6 +273,9 @@ Summary status values:
       "url": "https://example.dev/docs/start",
       "beforeTitle": "Start",
       "afterTitle": "Start",
+      "pageKind": "document",
+      "filePath": null,
+      "language": null,
       "lineSummary": {
         "addedLineCount": 3,
         "removedLineCount": 2
@@ -293,6 +304,9 @@ Summary status values:
       "pageUrl": "https://example.dev/docs/maker-flow",
       "pageTitle": "Maker flow",
       "sectionTitle": "Order lifecycle",
+      "pageKind": "document",
+      "filePath": null,
+      "language": null,
       "markdown": "# Order lifecycle\n...",
       "score": 0.036,
       "signals": ["lexical", "vector"]
@@ -302,6 +316,7 @@ Summary status values:
 ```
 
 `limit` defaults to `20`. `offset` defaults to `0`.
+`pathPatterns` and `languages` narrow results for git/file sources and are also honored by MCP.
 
 `modeRequested` is the requested search mode (`auto`, `lexical`, `hybrid`, `semantic`).
 `modeUsed` is the actual executed mode after fallbacks. In `auto`, `aiocs` can degrade back to lexical if the vector layer is unavailable or incomplete for the requested scope.
@@ -445,6 +460,9 @@ Summary status values:
     "pageUrl": "https://example.dev/docs/maker-flow",
     "pageTitle": "Maker flow",
     "sectionTitle": "Order lifecycle",
+    "pageKind": "document",
+    "filePath": null,
+    "language": null,
     "markdown": "# Order lifecycle\n..."
   }
 }

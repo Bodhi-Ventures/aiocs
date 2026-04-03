@@ -117,6 +117,9 @@ async function copyDataDirForBackup(from: string, to: string): Promise<void> {
       if (name === CATALOG_DB_FILENAME) {
         return false;
       }
+      if (name === 'git-mirrors') {
+        return false;
+      }
       return !SQLITE_SIDE_CAR_SUFFIXES.some((suffix) => name === `${CATALOG_DB_FILENAME}${suffix}`);
     },
   });

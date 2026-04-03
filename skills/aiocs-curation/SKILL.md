@@ -12,6 +12,7 @@ Use this skill when you need to add, refresh, repair, or otherwise mutate `aiocs
 - The requested docs source is missing from the local `aiocs` catalog and is worth curating for reuse.
 - An existing source is stale and should be refreshed instead of bypassed.
 - A source spec needs to be created, updated, or upserted under `~/.aiocs/sources`.
+- A reusable external git repository should be added as a `kind: git` source under `~/.aiocs/sources`.
 - A canary is failing and the source needs remediation or targeted refetch.
 - The user explicitly wants `aiocs` maintenance, source onboarding, or catalog repair.
 
@@ -63,6 +64,7 @@ Refresh only what is needed:
 ```bash
 docs --json refresh due my-source
 docs --json refresh due hyperliquid
+docs --json refresh due nktkas-hyperliquid
 docs --json fetch my-source
 docs --json canary my-source
 ```

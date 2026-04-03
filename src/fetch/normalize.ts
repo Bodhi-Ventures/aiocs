@@ -1,7 +1,7 @@
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 
-import type { SourceSpec } from '../spec/source-spec.js';
+import type { WebSourceSpec } from '../spec/source-spec.js';
 
 const turndown = new TurndownService({
   headingStyle: 'atx',
@@ -28,7 +28,7 @@ export function ensureTitle(markdown: string, title: string): string {
 }
 
 export function normalizeMarkdown(
-  spec: SourceSpec,
+  spec: WebSourceSpec,
   page: { title: string; url: string; markdown: string },
 ): string {
   const titled = ensureTitle(page.markdown, page.title);

@@ -22,6 +22,8 @@ export type SearchOptions = {
   snapshot?: string;
   all?: boolean;
   project?: string;
+  path?: string[];
+  language?: string[];
   limit?: number;
   offset?: number;
   mode?: SearchMode;
@@ -65,6 +67,7 @@ export async function upsertSourceFromSpecFile(specFile: string): Promise<{
 export async function listSources(): Promise<{
   sources: Array<{
     id: string;
+    kind: 'web' | 'git';
     label: string;
     specPath: string | null;
     nextDueAt: string;
@@ -177,7 +180,8 @@ export async function runSourceCanaries(sourceIdOrAll: string): Promise<{
       failCount: number;
     };
     checks: Array<{
-      url: string;
+      url?: string;
+      path?: string;
       status: 'pass' | 'fail';
       title?: string;
       markdownLength?: number;
@@ -185,7 +189,7 @@ export async function runSourceCanaries(sourceIdOrAll: string): Promise<{
     }>;
   }>;
 }> {
-  const results = await withCatalog(async ({ catalog }) => {
+  const results = await withCatalog(async ({ catalog, dataDir }) => {
     const sourceIds = sourceIdOrAll === 'all'
       ? catalog.listSources().map((item) => item.id)
       : [sourceIdOrAll];
@@ -199,6 +203,7 @@ export async function runSourceCanaries(sourceIdOrAll: string): Promise<{
       canaried.push(await runSourceCanary({
         catalog,
         sourceId,
+        dataDir,
         env: process.env,
       }));
     }
@@ -299,6 +304,9 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
     pageTitle: string;
     sectionTitle: string;
     markdown: string;
+    pageKind: 'document' | 'file';
+    filePath: string | null;
+    language: string | null;
     score: number;
     signals: Array<'lexical' | 'vector'>;
   }>;
@@ -326,6 +334,8 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
         ...(explicitSources ? { sourceIds: options.source } : {}),
         ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
         ...(options.all ? { all: true } : {}),
+        ...(options.path && options.path.length > 0 ? { pathPatterns: options.path } : {}),
+        ...(options.language && options.language.length > 0 ? { languages: options.language } : {}),
         ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
         ...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
       },

@@ -49,6 +49,7 @@ const doctorReportSchema = z.object({
 
 const sourceSchema = z.object({
   id: z.string(),
+  kind: z.enum(['web', 'git']),
   label: z.string(),
   specPath: z.string().nullable(),
   nextDueAt: z.string(),
@@ -78,6 +79,9 @@ const searchResultSchema = z.object({
   pageTitle: z.string(),
   sectionTitle: z.string(),
   markdown: z.string(),
+  pageKind: z.enum(['document', 'file']),
+  filePath: z.string().nullable(),
+  language: z.string().nullable(),
   score: z.number().optional(),
   signals: z.array(z.enum(['lexical', 'vector'])).optional(),
 });
@@ -127,7 +131,8 @@ const canaryResultSchema = z.object({
     failCount: z.number().int().nonnegative(),
   }),
   checks: z.array(z.object({
-    url: z.string(),
+    url: z.string().optional(),
+    path: z.string().optional(),
     status: z.enum(['pass', 'fail']),
     title: z.string().optional(),
     markdownLength: z.number().int().nonnegative().optional(),
@@ -148,15 +153,24 @@ const snapshotDiffSchema = z.object({
   addedPages: z.array(z.object({
     url: z.string(),
     title: z.string(),
+    pageKind: z.enum(['document', 'file']),
+    filePath: z.string().nullable(),
+    language: z.string().nullable(),
   })),
   removedPages: z.array(z.object({
     url: z.string(),
     title: z.string(),
+    pageKind: z.enum(['document', 'file']),
+    filePath: z.string().nullable(),
+    language: z.string().nullable(),
   })),
   changedPages: z.array(z.object({
     url: z.string(),
     beforeTitle: z.string(),
     afterTitle: z.string(),
+    pageKind: z.enum(['document', 'file']),
+    filePath: z.string().nullable(),
+    language: z.string().nullable(),
     lineSummary: z.object({
       addedLineCount: z.number().int().nonnegative(),
       removedLineCount: z.number().int().nonnegative(),
@@ -274,6 +288,8 @@ const toolHandlers: Record<string, ToolHandler> = {
     ...(typeof args.snapshotId === 'string' ? { snapshot: args.snapshotId } : {}),
     ...(typeof args.all === 'boolean' ? { all: args.all } : {}),
     ...(typeof args.project === 'string' ? { project: args.project } : {}),
+    ...(Array.isArray(args.pathPatterns) ? { path: args.pathPatterns as string[] } : {}),
+    ...(Array.isArray(args.languages) ? { language: args.languages as string[] } : {}),
     ...(typeof args.mode === 'string' ? { mode: args.mode as 'auto' | 'lexical' | 'hybrid' | 'semantic' } : {}),
     ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
     ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
@@ -566,6 +582,8 @@ registerAiocsTool(
       snapshotId: z.string().optional(),
       all: z.boolean().optional(),
       project: z.string().optional(),
+      pathPatterns: z.array(z.string()).optional(),
+      languages: z.array(z.string()).optional(),
       mode: z.enum(['auto', 'lexical', 'hybrid', 'semantic']).optional(),
       limit: z.number().int().positive().optional(),
       offset: z.number().int().nonnegative().optional(),

@@ -19,6 +19,7 @@ export type DoctorSummaryStatus = 'healthy' | 'degraded' | 'unhealthy';
 export type DoctorCheck = {
   id:
     | 'catalog'
+    | 'git'
     | 'playwright'
     | 'daemon-config'
     | 'source-spec-dirs'
@@ -136,6 +137,26 @@ async function checkPlaywright(): Promise<DoctorCheck> {
       id: 'playwright',
       status: 'fail',
       summary: `Playwright is not ready: ${toErrorMessage(error)}`,
+    };
+  }
+}
+
+async function checkGit(): Promise<DoctorCheck> {
+  try {
+    const { stdout } = await execFileAsync('git', ['--version']);
+    return {
+      id: 'git',
+      status: 'pass',
+      summary: 'Git executable is available.',
+      details: {
+        version: stdout.trim(),
+      },
+    };
+  } catch (error) {
+    return {
+      id: 'git',
+      status: 'fail',
+      summary: `Git is not ready: ${toErrorMessage(error)}`,
     };
   }
 }
@@ -473,6 +494,7 @@ async function checkDocker(): Promise<DoctorCheck> {
 
 export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<DoctorReport> {
   const catalogCheck = await checkCatalog(env);
+  const gitCheck = await checkGit();
   const playwrightCheck = await checkPlaywright();
   const { daemonConfigCheck, daemonConfig } = await checkDaemonConfig(env);
   const sourceSpecDirsCheck = await checkSourceSpecDirs(daemonConfig);
@@ -484,6 +506,7 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<D
   const dockerCheck = await checkDocker();
   const checks = [
     catalogCheck,
+    gitCheck,
     playwrightCheck,
     daemonConfigCheck,
     sourceSpecDirsCheck,

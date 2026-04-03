@@ -10,6 +10,9 @@ type ChunkPayload = {
   pageUrl: string;
   pageTitle: string;
   sectionTitle: string;
+  pageKind: 'document' | 'file';
+  filePath: string | null;
+  language: string | null;
   modelKey: string;
 };
 
@@ -88,15 +91,18 @@ export class AiocsVectorStore {
 
   async upsertChunks(input: {
     modelKey: string;
-    points: Array<{
-      chunkId: number;
-      vector: number[];
-      sourceId: string;
-      snapshotId: string;
-      pageUrl: string;
-      pageTitle: string;
-      sectionTitle: string;
-    }>;
+      points: Array<{
+        chunkId: number;
+        vector: number[];
+        sourceId: string;
+        snapshotId: string;
+        pageUrl: string;
+        pageTitle: string;
+        sectionTitle: string;
+        pageKind: 'document' | 'file';
+        filePath: string | null;
+        language: string | null;
+      }>;
   }): Promise<void> {
     if (input.points.length === 0) {
       return;
@@ -112,6 +118,9 @@ export class AiocsVectorStore {
         pageUrl: point.pageUrl,
         pageTitle: point.pageTitle,
         sectionTitle: point.sectionTitle,
+        pageKind: point.pageKind,
+        filePath: point.filePath,
+        language: point.language,
         modelKey: input.modelKey,
       } satisfies ChunkPayload,
     }));

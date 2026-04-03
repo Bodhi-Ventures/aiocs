@@ -82,6 +82,9 @@ describe('AiocsVectorStore', () => {
           pageUrl: 'http://127.0.0.1/docs/page',
           pageTitle: 'Page',
           sectionTitle: 'Section',
+          pageKind: 'document',
+          filePath: null,
+          language: null,
         },
       ],
     });

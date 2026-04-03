@@ -142,6 +142,9 @@ export async function processEmbeddingJobs(
             pageUrl: chunk.pageUrl,
             pageTitle: chunk.pageTitle,
             sectionTitle: chunk.sectionTitle,
+            pageKind: chunk.pageKind,
+            filePath: chunk.filePath,
+            language: chunk.language,
           })),
         });
 

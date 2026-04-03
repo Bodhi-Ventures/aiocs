@@ -53,6 +53,7 @@ const baseConfig: HybridRuntimeConfig = {
 
 function buildSpec(id: string): SourceSpec {
   return {
+    kind: 'web',
     id,
     label: `${id} docs`,
     startUrls: ['https://example.com/docs'],

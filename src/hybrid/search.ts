@@ -1,5 +1,6 @@
 import type { Catalog } from '../catalog/catalog.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
+import { matchesPatterns } from '../patterns.js';
 import type { HybridRuntimeConfig, SearchMode } from '../runtime/hybrid-config.js';
 import { embedTexts, getEmbeddingModelKey } from './ollama.js';
 import { AiocsVectorStore } from './qdrant.js';
@@ -21,6 +22,9 @@ export type HybridSearchResult = {
     pageTitle: string;
     sectionTitle: string;
     markdown: string;
+    pageKind: 'document' | 'file';
+    filePath: string | null;
+    language: string | null;
     score: number;
     signals: Array<'lexical' | 'vector'>;
   }>;
@@ -35,6 +39,8 @@ type HybridSearchInput = {
     sourceIds?: string[];
     snapshotId?: string;
     all?: boolean;
+    pathPatterns?: string[];
+    languages?: string[];
     limit?: number;
     offset?: number;
   };
@@ -45,7 +51,18 @@ function windowSize(limit: number, offset: number, minimum: number): number {
   return Math.max(limit + offset, minimum);
 }
 
-function withScores<T extends { chunkId: number; sourceId: string; snapshotId: string; pageUrl: string; pageTitle: string; sectionTitle: string; markdown: string }>(
+function withScores<T extends {
+  chunkId: number;
+  sourceId: string;
+  snapshotId: string;
+  pageUrl: string;
+  pageTitle: string;
+  sectionTitle: string;
+  markdown: string;
+  pageKind: 'document' | 'file';
+  filePath: string | null;
+  language: string | null;
+}>(
   rows: T[],
   scoreLookup: Map<number, { score: number; signals: Array<'lexical' | 'vector'> }>,
 ): HybridSearchResult['results'] {
@@ -62,6 +79,31 @@ function withScores<T extends { chunkId: number; sourceId: string; snapshotId: s
   });
 }
 
+function matchesChunkFilters(
+  row: {
+    filePath: string | null;
+    language: string | null;
+  },
+  filters: {
+    pathPatterns: string[] | null;
+    languages: string[] | null;
+  },
+): boolean {
+  if (filters.pathPatterns && filters.pathPatterns.length > 0) {
+    if (!row.filePath || !matchesPatterns(row.filePath, filters.pathPatterns)) {
+      return false;
+    }
+  }
+
+  if (filters.languages && filters.languages.length > 0) {
+    if (!row.language || !filters.languages.includes(row.language.toLowerCase())) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export async function searchHybridCatalog(input: HybridSearchInput): Promise<HybridSearchResult> {
   const scope = input.catalog.resolveSearchScope({
     query: input.query,
@@ -69,6 +111,8 @@ export async function searchHybridCatalog(input: HybridSearchInput): Promise<Hyb
     ...(input.searchInput.sourceIds ? { sourceIds: input.searchInput.sourceIds } : {}),
     ...(input.searchInput.snapshotId ? { snapshotId: input.searchInput.snapshotId } : {}),
     ...(input.searchInput.all ? { all: true } : {}),
+    ...(input.searchInput.pathPatterns ? { pathPatterns: input.searchInput.pathPatterns } : {}),
+    ...(input.searchInput.languages ? { languages: input.searchInput.languages } : {}),
     ...(typeof input.searchInput.limit === 'number' ? { limit: input.searchInput.limit } : {}),
     ...(typeof input.searchInput.offset === 'number' ? { offset: input.searchInput.offset } : {}),
   });
@@ -139,13 +183,27 @@ export async function searchHybridCatalog(input: HybridSearchInput): Promise<Hyb
     }
 
     const vectorStore = new AiocsVectorStore(input.config);
-    vectorCandidates = await vectorStore.search({
+    const rawVectorCandidates = await vectorStore.search({
       vector: queryVector,
       snapshotIds: scope.snapshotIds,
       sourceIds: scope.sourceIds,
       modelKey,
       limit: windowSize(scope.limit, scope.offset, input.config.vectorCandidateWindow),
     });
+    if (rawVectorCandidates.length > 0 && (scope.pathPatterns || scope.languages)) {
+      const candidateRows = input.catalog.getChunksByIds(rawVectorCandidates.map((candidate) => candidate.chunkId));
+      const allowedIds = new Set(
+        candidateRows
+          .filter((row) => matchesChunkFilters(row, {
+            pathPatterns: scope.pathPatterns,
+            languages: scope.languages,
+          }))
+          .map((row) => row.chunkId),
+      );
+      vectorCandidates = rawVectorCandidates.filter((candidate) => allowedIds.has(candidate.chunkId));
+    } else {
+      vectorCandidates = rawVectorCandidates;
+    }
   } catch (error) {
     if (input.mode === 'auto') {
       return lexicalOnly();

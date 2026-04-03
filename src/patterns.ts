@@ -26,6 +26,10 @@ export function patternToRegex(pattern: string): RegExp {
   return new RegExp(`${regex}$`);
 }
 
-export function matchesPatterns(url: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => patternToRegex(pattern).test(url));
+export function matchesPatterns(value: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => patternToRegex(pattern).test(value));
+}
+
+export function toSqliteGlob(pattern: string): string {
+  return pattern.replace(/\*\*/g, '*');
 }

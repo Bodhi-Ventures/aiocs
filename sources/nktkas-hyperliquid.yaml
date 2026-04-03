@@ -1,0 +1,30 @@
+kind: git
+id: nktkas-hyperliquid
+label: nktkas/hyperliquid Repo
+repo:
+  url: https://github.com/nktkas/hyperliquid.git
+  ref: main
+  include:
+    - README.md
+    - CONTRIBUTING.md
+    - SECURITY.md
+    - LICENSE
+    - docs/**
+    - src/**
+    - tests/**
+  exclude:
+    - .github/**
+    - .dev/**
+  maxFiles: 1000
+  textFileMaxBytes: 262144
+schedule:
+  everyHours: 24
+canary:
+  everyHours: 6
+  checks:
+    - path: README.md
+      expectedText: Hyperliquid
+      minContentLength: 120
+    - path: src/mod.ts
+      expectedText: export
+      minContentLength: 20

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 type SnapshotFingerprintInput = {
   sourceId: string;
   configHash: string;
+  revisionKey?: string;
   pages: Array<{
     url: string;
     contentHash: string;
@@ -18,6 +19,7 @@ export function buildSnapshotFingerprint(input: SnapshotFingerprintInput): strin
   const payload = JSON.stringify({
     sourceId: input.sourceId,
     configHash: input.configHash,
+    revisionKey: input.revisionKey ?? null,
     pages: normalizedPages,
   });
 

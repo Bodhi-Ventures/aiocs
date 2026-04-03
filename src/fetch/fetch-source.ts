@@ -6,10 +6,16 @@ import { chromium, type BrowserContext, type Page } from 'playwright';
 
 import type { Catalog } from '../catalog/catalog.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
-import { resolveSourceCanary, type SourceSpec } from '../spec/source-spec.js';
+import { fetchGitSource, runGitSourceCanary } from '../git/git-source.js';
+import {
+  isGitSourceSpec,
+  resolveSourceCanary,
+  type SourceSpec,
+  type WebSourceSpec,
+} from '../spec/source-spec.js';
 import { extractPage } from './extract.js';
 import { normalizeMarkdown } from './normalize.js';
-import { matchesPatterns } from './url-patterns.js';
+import { matchesPatterns } from '../patterns.js';
 
 type FetchSourceInput = {
   catalog: Catalog;
@@ -21,6 +27,7 @@ type FetchSourceInput = {
 type CanarySourceInput = {
   catalog: Catalog;
   sourceId: string;
+  dataDir?: string;
   env?: NodeJS.ProcessEnv;
 };
 
@@ -37,7 +44,8 @@ type ExtractedFetchedPage = FetchedPage & {
 type NavigationResponse = Awaited<ReturnType<import('playwright').Page['goto']>>;
 
 export type CanaryCheckResult = {
-  url: string;
+  url?: string;
+  path?: string;
   status: 'pass' | 'fail';
   title?: string;
   markdownLength?: number;
@@ -183,7 +191,7 @@ function resolveEnvValue(name: string, env: NodeJS.ProcessEnv): string {
   return value;
 }
 
-function resolveSourceAuth(spec: SourceSpec, env: NodeJS.ProcessEnv): {
+function resolveSourceAuth(spec: WebSourceSpec, env: NodeJS.ProcessEnv): {
   scopedHeaders: ResolvedAuthHeader[];
   cookies: Parameters<BrowserContext['addCookies']>[0];
 } {
@@ -234,7 +242,7 @@ export function applyScopedAuthHeaders(
   return nextHeaders;
 }
 
-async function createSourceContext(spec: SourceSpec, env: NodeJS.ProcessEnv): Promise<{
+async function createSourceContext(spec: WebSourceSpec, env: NodeJS.ProcessEnv): Promise<{
   page: Page;
   close(): Promise<void>;
 }> {
@@ -285,7 +293,7 @@ async function discoverLinks(page: Page): Promise<string[]> {
 }
 
 async function extractFetchedPage(
-  spec: SourceSpec,
+  spec: WebSourceSpec,
   page: Page,
   url: string,
   response: NavigationResponse,
@@ -326,6 +334,15 @@ async function fetchSourceOnce(input: FetchSourceInput): Promise<{
       AIOCS_ERROR_CODES.sourceNotFound,
       `Unknown source '${input.sourceId}'`,
     );
+  }
+
+  if (isGitSourceSpec(spec)) {
+    const result = await fetchGitSource(input);
+    return {
+      snapshotId: result.snapshotId,
+      pageCount: result.pageCount,
+      reused: result.reused,
+    };
   }
 
   const session = await createSourceContext(spec, input.env ?? process.env);
@@ -481,6 +498,10 @@ async function runSourceCanaryOnce(input: CanarySourceInput): Promise<CanaryRunR
       AIOCS_ERROR_CODES.sourceNotFound,
       `Unknown source '${input.sourceId}'`,
     );
+  }
+
+  if (isGitSourceSpec(spec)) {
+    return runGitSourceCanary(input);
   }
 
   const canary = resolveSourceCanary(spec);

@@ -198,4 +198,58 @@ describe('backup export/import', () => {
       outputDir: exportDir,
     })).rejects.toThrow(/missing the catalog database/i);
   });
+
+  it('excludes git mirror caches from backup exports', async () => {
+    const sourceDataDir = join(root, 'source-data');
+    const exportDir = join(root, 'exported-backup');
+    const catalog = openCatalog({ dataDir: sourceDataDir });
+    const spec = parseSourceSpecObject({
+      kind: 'git',
+      id: 'repo-source',
+      label: 'Repo Source',
+      repo: {
+        url: 'https://github.com/example/repo.git',
+        ref: 'main',
+        include: ['README.md'],
+        exclude: [],
+        maxFiles: 10,
+        textFileMaxBytes: 32_768,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+    });
+
+    try {
+      catalog.upsertSource(spec);
+      catalog.recordSuccessfulSnapshot({
+        sourceId: spec.id,
+        revisionKey: 'commit-one',
+        detectedVersion: 'commit-one',
+        pages: [
+          {
+            url: 'https://github.com/example/repo/blob/main/README.md',
+            title: 'README.md',
+            markdown: '# Repo\n',
+            pageKind: 'file',
+            filePath: 'README.md',
+            language: 'markdown',
+          },
+        ],
+      });
+    } finally {
+      catalog.close();
+    }
+
+    mkdirSync(join(sourceDataDir, 'git-mirrors', 'repo-source.git'), { recursive: true });
+    writeFileSync(join(sourceDataDir, 'git-mirrors', 'repo-source.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+
+    const exported = await exportBackup({
+      dataDir: sourceDataDir,
+      outputDir: exportDir,
+    });
+
+    expect(exported.manifest.entries.some((entry) => entry.relativePath.startsWith('data/git-mirrors'))).toBe(false);
+    expect(existsSync(join(exportDir, 'data', 'git-mirrors'))).toBe(false);
+  });
 });

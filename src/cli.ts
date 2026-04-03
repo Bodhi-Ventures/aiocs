@@ -57,6 +57,9 @@ function renderSearchResult(result: {
   pageTitle: string;
   sectionTitle: string;
   markdown: string;
+  pageKind?: 'document' | 'file';
+  filePath?: string | null;
+  language?: string | null;
   score?: number;
   signals?: Array<'lexical' | 'vector'>;
 }): string {
@@ -66,6 +69,9 @@ function renderSearchResult(result: {
     `Snapshot: ${result.snapshotId}`,
     ...(typeof result.score === 'number' ? [`Score: ${result.score.toFixed(4)}`] : []),
     ...(result.signals ? [`Signals: ${result.signals.join(', ')}`] : []),
+    ...(result.pageKind ? [`Kind: ${result.pageKind}`] : []),
+    ...(result.filePath ? [`Path: ${result.filePath}`] : []),
+    ...(result.language ? [`Language: ${result.language}`] : []),
     `Page: ${result.pageTitle}`,
     `Section: ${result.sectionTitle}`,
     `URL: ${result.pageUrl}`,
@@ -351,6 +357,7 @@ source
           ? 'No sources registered.'
           : sources.map((item) => [
             item.id,
+            item.kind,
             item.label,
             item.isDue ? 'due now' : `next due ${item.nextDueAt}`,
             `spec ${item.specPath ?? '(inline/unknown)'}`,
@@ -633,12 +640,20 @@ program
   .option('--snapshot <snapshot-id>', 'search a specific snapshot')
   .option('--all', 'search across all latest snapshots')
   .option('--project <path>', 'resolve search scope as if running from this path')
+  .option('--path <glob>', 'restrict search to file paths matching a glob', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--language <name>', 'restrict search to a language', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
   .option('--mode <mode>', 'search mode: auto, lexical, hybrid, semantic')
   .option('--limit <count>', 'maximum number of results to return')
   .option('--offset <count>', 'number of results to skip before returning matches')
   .action(async (
     query: string,
-    options: SearchOptions & { limit?: string; offset?: string; mode?: string },
+    options: SearchOptions & { limit?: string; offset?: string; mode?: string; path?: string[]; language?: string[] },
     command: Command,
   ) => {
     await executeCommand(command, 'search', async () => {
@@ -650,6 +665,8 @@ program
         ...(options.snapshot ? { snapshot: options.snapshot } : {}),
         ...(typeof options.all !== 'undefined' ? { all: options.all } : {}),
         ...(options.project ? { project: options.project } : {}),
+        ...(options.path && options.path.length > 0 ? { path: options.path } : {}),
+        ...(options.language && options.language.length > 0 ? { language: options.language } : {}),
         ...(mode ? { mode } : {}),
         ...(typeof limit === 'number' ? { limit } : {}),
         ...(typeof offset === 'number' ? { offset } : {}),

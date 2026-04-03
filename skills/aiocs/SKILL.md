@@ -11,6 +11,7 @@ Use this skill when you need authoritative local documentation lookup through th
 
 - The user is asking about exchange or product docs that may already exist in the local `aiocs` catalog.
 - You need authoritative local docs for an exchange, SDK, or product without browsing the live site every time.
+- You need reusable reference search over a curated external git repository that already lives in `aiocs`.
 - You want machine-readable search/show/diff/coverage results for an AI agent.
 - You need hybrid docs retrieval with lexical plus semantic/vector recall.
 - You need to validate runtime health before relying on the local docs catalog.
@@ -39,6 +40,7 @@ Use this skill when you need authoritative local documentation lookup through th
 
 - Default to `search` with `mode=auto`.
 - Use `mode=lexical` for exact identifiers, section titles, endpoint names, and error strings.
+- Use `--path` / `pathPatterns` and `--language` / `languages` when searching repo/code sources.
 - Use `mode=hybrid` for conceptual questions when embeddings are healthy.
 - Use `mode=semantic` only when you explicitly want vector-only recall.
 - When citing results, include `sourceId`, `snapshotId`, and `pageUrl` when they materially help traceability.
@@ -66,6 +68,7 @@ docs --json search "maker flow" --source hyperliquid
 docs --json search "maker flow" --all
 docs --json search "maker flow" --source hyperliquid --limit 5 --offset 0
 docs --json search "maker flow" --source hyperliquid --mode hybrid
+docs --json search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript --mode lexical
 ```
 
 Inspect a specific chunk:

@@ -41,10 +41,11 @@ command = "aiocs-mcp"
 4. Check `source_list` before assuming a source is missing or stale.
 5. Default to `search mode=auto`.
 6. Use `mode=lexical` for exact identifiers, endpoint names, headings, and error strings.
-7. Use the `aiocs` skill for read/search flows and `aiocs-curation` only when the task requires source onboarding or refresh.
-8. Prefer `refresh due <source-id>` over force `fetch <source-id>` when the source already exists.
-9. Use MCP `batch` when multiple list/search/show or search/diff/coverage steps are needed.
-10. Cite `sourceId`, `snapshotId`, and `pageUrl` when they materially improve traceability.
+7. Use `pathPatterns` and `languages` filters when the source is a repo/code source and the question is file- or language-specific.
+8. Use the `aiocs` skill for read/search flows and `aiocs-curation` only when the task requires source onboarding or refresh.
+9. Prefer `refresh due <source-id>` over force `fetch <source-id>` when the source already exists.
+10. Use MCP `batch` when multiple list/search/show or search/diff/coverage steps are needed.
+11. Cite `sourceId`, `snapshotId`, and `pageUrl` when they materially improve traceability.
 
 ## Automatic use in Codex
 
@@ -94,6 +95,7 @@ Local docs lookup:
 ```bash
 docs --json source list
 docs --json search "maker flow" --source hyperliquid --mode auto
+docs --json search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript --mode lexical
 docs --json show 42
 ```
 

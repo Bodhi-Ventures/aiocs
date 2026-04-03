@@ -4,12 +4,13 @@ import { randomUUID } from 'node:crypto';
 
 import Database from 'better-sqlite3';
 
-import { chunkMarkdown } from './chunking.js';
+import { chunkContent, detectLanguage } from './chunking.js';
 import { buildSnapshotFingerprint, sha256 } from './fingerprint.js';
 import { canonicalizeProjectPath, resolveProjectScope } from './project-scope.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
+import { toSqliteGlob } from '../patterns.js';
 import { canonicalizeManagedSpecPath } from '../runtime/paths.js';
-import { resolveSourceCanary, type SourceSpec } from '../spec/source-spec.js';
+import { parseSourceSpecObject, type SourceSpec } from '../spec/source-spec.js';
 
 type OpenCatalogOptions = {
   dataDir: string;
@@ -19,11 +20,15 @@ type SuccessfulPageInput = {
   url: string;
   title: string;
   markdown: string;
+  pageKind?: 'document' | 'file';
+  filePath?: string | null;
+  language?: string | null;
 };
 
 type RecordSuccessfulSnapshotInput = {
   sourceId: string;
   detectedVersion?: string;
+  revisionKey?: string;
   pages: SuccessfulPageInput[];
 };
 
@@ -33,6 +38,8 @@ type SearchInput = {
   sourceIds?: string[];
   snapshotId?: string;
   all?: boolean;
+  pathPatterns?: string[];
+  languages?: string[];
   limit?: number;
   offset?: number;
 };
@@ -45,6 +52,9 @@ type SearchRow = {
   pageTitle: string;
   sectionTitle: string;
   markdown: string;
+  pageKind: 'document' | 'file';
+  filePath: string | null;
+  language: string | null;
 };
 
 type ChunkRecord = SearchRow;
@@ -59,6 +69,9 @@ type SnapshotPageRow = {
   title: string;
   markdown: string;
   content_hash: string;
+  page_kind: 'document' | 'file';
+  file_path: string | null;
+  language: string | null;
 };
 
 type DaemonStateRow = {
@@ -75,6 +88,8 @@ type SearchScope = {
   offset: number;
   sourceIds: string[] | null;
   snapshotIds: string[];
+  pathPatterns: string[] | null;
+  languages: string[] | null;
 };
 
 type SearchResult = {
@@ -154,6 +169,9 @@ function initSchema(db: Database.Database): void {
       title TEXT NOT NULL,
       markdown TEXT NOT NULL,
       content_hash TEXT NOT NULL,
+      page_kind TEXT NOT NULL DEFAULT 'document' CHECK(page_kind IN ('document', 'file')),
+      file_path TEXT,
+      language TEXT,
       UNIQUE(snapshot_id, url)
     );
 
@@ -166,7 +184,10 @@ function initSchema(db: Database.Database): void {
       page_title TEXT NOT NULL,
       section_title TEXT NOT NULL,
       chunk_order INTEGER NOT NULL,
-      markdown TEXT NOT NULL
+      markdown TEXT NOT NULL,
+      page_kind TEXT NOT NULL DEFAULT 'document' CHECK(page_kind IN ('document', 'file')),
+      file_path TEXT,
+      language TEXT
     );
 
     CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -283,6 +304,28 @@ function initSchema(db: Database.Database): void {
   if (!sourceColumns.some((column) => column.name === 'next_canary_due_at')) {
     db.exec('ALTER TABLE sources ADD COLUMN next_canary_due_at TEXT');
   }
+
+  const pageColumns = db.prepare('PRAGMA table_info(pages)').all() as Array<{ name: string }>;
+  if (!pageColumns.some((column) => column.name === 'page_kind')) {
+    db.exec(`ALTER TABLE pages ADD COLUMN page_kind TEXT NOT NULL DEFAULT 'document'`);
+  }
+  if (!pageColumns.some((column) => column.name === 'file_path')) {
+    db.exec('ALTER TABLE pages ADD COLUMN file_path TEXT');
+  }
+  if (!pageColumns.some((column) => column.name === 'language')) {
+    db.exec('ALTER TABLE pages ADD COLUMN language TEXT');
+  }
+
+  const chunkColumns = db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>;
+  if (!chunkColumns.some((column) => column.name === 'page_kind')) {
+    db.exec(`ALTER TABLE chunks ADD COLUMN page_kind TEXT NOT NULL DEFAULT 'document'`);
+  }
+  if (!chunkColumns.some((column) => column.name === 'file_path')) {
+    db.exec('ALTER TABLE chunks ADD COLUMN file_path TEXT');
+  }
+  if (!chunkColumns.some((column) => column.name === 'language')) {
+    db.exec('ALTER TABLE chunks ADD COLUMN language TEXT');
+  }
 }
 
 function nowIso(): string {
@@ -291,6 +334,10 @@ function nowIso(): string {
 
 function addHoursIso(hours: number): string {
   return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+}
+
+function resolveCanaryEveryHours(spec: SourceSpec): number {
+  return spec.canary?.everyHours ?? Math.max(1, Math.min(spec.schedule.everyHours, 6));
 }
 
 function stableStringify(value: unknown): string {
@@ -316,6 +363,24 @@ function normalizeQuery(query: string): string {
     .filter(Boolean);
 
   return words.join(' ');
+}
+
+function normalizePatternFilters(patterns?: string[]): string[] | null {
+  if (!patterns || patterns.length === 0) {
+    return null;
+  }
+
+  const normalized = [...new Set(patterns.map((pattern) => pattern.trim()).filter(Boolean))];
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeLanguageFilters(languages?: string[]): string[] | null {
+  if (!languages || languages.length === 0) {
+    return null;
+  }
+
+  const normalized = [...new Set(languages.map((language) => language.trim().toLowerCase()).filter(Boolean))];
+  return normalized.length > 0 ? normalized : null;
 }
 
 function assertPaginationValue(
@@ -389,6 +454,8 @@ export function openCatalog(options: OpenCatalogOptions) {
         offset,
         sourceIds: null,
         snapshotIds: [],
+        pathPatterns: normalizePatternFilters(input.pathPatterns),
+        languages: normalizeLanguageFilters(input.languages),
       };
     }
 
@@ -407,6 +474,8 @@ export function openCatalog(options: OpenCatalogOptions) {
       offset,
       sourceIds: filterSourceIds,
       snapshotIds: latestSnapshotIds,
+      pathPatterns: normalizePatternFilters(input.pathPatterns),
+      languages: normalizeLanguageFilters(input.languages),
     };
   };
 
@@ -434,10 +503,18 @@ export function openCatalog(options: OpenCatalogOptions) {
     const sourceSql = input.scope.sourceIds
       ? `AND c.source_id IN (${input.scope.sourceIds.map(() => '?').join(',')})`
       : '';
+    const pathSql = input.scope.pathPatterns
+      ? `AND c.file_path IS NOT NULL AND (${input.scope.pathPatterns.map(() => 'c.file_path GLOB ?').join(' OR ')})`
+      : '';
+    const languageSql = input.scope.languages
+      ? `AND c.language IN (${input.scope.languages.map(() => '?').join(',')})`
+      : '';
     const queryArgs = [
       normalized,
       ...input.scope.snapshotIds,
       ...(input.scope.sourceIds ?? []),
+      ...((input.scope.pathPatterns ?? []).map((pattern) => toSqliteGlob(pattern))),
+      ...(input.scope.languages ?? []),
     ];
 
     const totalRow = db.prepare(`
@@ -447,6 +524,8 @@ export function openCatalog(options: OpenCatalogOptions) {
       WHERE chunks_fts MATCH ?
         AND c.snapshot_id IN (${whereSnapshotPlaceholders})
         ${sourceSql}
+        ${pathSql}
+        ${languageSql}
     `).get(...queryArgs) as { total: number };
 
     const rows = db.prepare(`
@@ -457,12 +536,17 @@ export function openCatalog(options: OpenCatalogOptions) {
         c.page_url,
         c.page_title,
         c.section_title,
-        c.markdown
+        c.markdown,
+        c.page_kind,
+        c.file_path,
+        c.language
       FROM chunks_fts
       JOIN chunks c ON c.id = chunks_fts.rowid
       WHERE chunks_fts MATCH ?
         AND c.snapshot_id IN (${whereSnapshotPlaceholders})
         ${sourceSql}
+        ${pathSql}
+        ${languageSql}
       ORDER BY bm25(chunks_fts), c.id
       LIMIT ?
       OFFSET ?
@@ -474,6 +558,9 @@ export function openCatalog(options: OpenCatalogOptions) {
       page_title: string;
       section_title: string;
       markdown: string;
+      page_kind: 'document' | 'file';
+      file_path: string | null;
+      language: string | null;
     }>;
 
     const results = rows.map((row) => ({
@@ -484,6 +571,9 @@ export function openCatalog(options: OpenCatalogOptions) {
       pageTitle: row.page_title,
       sectionTitle: row.section_title,
       markdown: row.markdown,
+      pageKind: row.page_kind,
+      filePath: row.file_path,
+      language: row.language,
     }));
 
     return {
@@ -694,11 +784,11 @@ export function openCatalog(options: OpenCatalogOptions) {
         : existing.config_hash === configHash
           ? existing.next_due_at
           : timestamp;
-      const canaryConfig = resolveSourceCanary(spec);
+      const canaryEveryHours = resolveCanaryEveryHours(spec);
       const nextCanaryDueAt = !existing
         ? timestamp
         : existing.config_hash === configHash
-          ? (existing.next_canary_due_at ?? addHoursIso(canaryConfig.everyHours))
+          ? (existing.next_canary_due_at ?? addHoursIso(canaryEveryHours))
           : timestamp;
       const configChanged = Boolean(existing && existing.config_hash !== configHash);
 
@@ -749,6 +839,7 @@ export function openCatalog(options: OpenCatalogOptions) {
 
     listSources(): Array<{
       id: string;
+      kind: SourceSpec['kind'];
       label: string;
       specPath: string | null;
       nextDueAt: string;
@@ -766,6 +857,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         SELECT
           id,
           label,
+          spec_json,
           spec_path,
           next_due_at,
           next_canary_due_at,
@@ -780,6 +872,7 @@ export function openCatalog(options: OpenCatalogOptions) {
       `).all() as Array<{
         id: string;
         label: string;
+        spec_json: string;
         spec_path: string | null;
         next_due_at: string;
         next_canary_due_at: string | null;
@@ -791,21 +884,26 @@ export function openCatalog(options: OpenCatalogOptions) {
         last_canary_status: 'pass' | 'fail' | null;
       }>;
 
-      return rows.map((row) => ({
-        id: row.id,
-        label: row.label,
-        specPath: row.spec_path ? canonicalizeManagedSpecPath(row.spec_path) : null,
-        nextDueAt: row.next_due_at,
-        isDue: Date.parse(row.next_due_at) <= Date.now(),
-        nextCanaryDueAt: row.next_canary_due_at,
-        isCanaryDue: row.next_canary_due_at ? Date.parse(row.next_canary_due_at) <= Date.now() : false,
-        lastCheckedAt: row.last_checked_at,
-        lastSuccessfulSnapshotAt: row.last_successful_snapshot_at,
-        lastSuccessfulSnapshotId: row.last_successful_snapshot_id,
-        lastCanaryCheckedAt: row.last_canary_checked_at,
-        lastSuccessfulCanaryAt: row.last_successful_canary_at,
-        lastCanaryStatus: row.last_canary_status,
-      }));
+      return rows.map((row) => {
+        const storedSpec = parseSourceSpecObject(JSON.parse(row.spec_json));
+
+        return {
+          id: row.id,
+          kind: storedSpec.kind,
+          label: row.label,
+          specPath: row.spec_path ? canonicalizeManagedSpecPath(row.spec_path) : null,
+          nextDueAt: row.next_due_at,
+          isDue: Date.parse(row.next_due_at) <= Date.now(),
+          nextCanaryDueAt: row.next_canary_due_at,
+          isCanaryDue: row.next_canary_due_at ? Date.parse(row.next_canary_due_at) <= Date.now() : false,
+          lastCheckedAt: row.last_checked_at,
+          lastSuccessfulSnapshotAt: row.last_successful_snapshot_at,
+          lastSuccessfulSnapshotId: row.last_successful_snapshot_id,
+          lastCanaryCheckedAt: row.last_canary_checked_at,
+          lastSuccessfulCanaryAt: row.last_successful_canary_at,
+          lastCanaryStatus: row.last_canary_status,
+        };
+      });
     },
 
     listDueSourceIds(referenceTime = nowIso()): string[] {
@@ -885,11 +983,15 @@ export function openCatalog(options: OpenCatalogOptions) {
         ...page,
         markdown: page.markdown.trim(),
         contentHash: sha256(page.markdown.trim()),
+        pageKind: page.pageKind ?? 'document',
+        filePath: page.filePath ?? null,
+        language: detectLanguage(page.filePath, page.language),
       }));
 
       const fingerprint = buildSnapshotFingerprint({
         sourceId: input.sourceId,
         configHash: sourceRow.config_hash,
+        ...(input.revisionKey ? { revisionKey: input.revisionKey } : {}),
         pages: pagesWithHashes.map((page) => ({
           url: page.url,
           contentHash: page.contentHash,
@@ -935,13 +1037,13 @@ export function openCatalog(options: OpenCatalogOptions) {
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       const insertPage = db.prepare(`
-        INSERT INTO pages (snapshot_id, url, title, markdown, content_hash)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO pages (snapshot_id, url, title, markdown, content_hash, page_kind, file_path, language)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const insertChunk = db.prepare(`
         INSERT INTO chunks (
-          source_id, snapshot_id, page_id, page_url, page_title, section_title, chunk_order, markdown
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          source_id, snapshot_id, page_id, page_url, page_title, section_title, chunk_order, markdown, page_kind, file_path, language
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const insertRun = db.prepare(`
         INSERT INTO fetch_runs (id, source_id, status, snapshot_id, started_at, finished_at)
@@ -960,9 +1062,23 @@ export function openCatalog(options: OpenCatalogOptions) {
         );
 
         for (const page of pagesWithHashes) {
-          const pageInsert = insertPage.run(snapshotId, page.url, page.title, page.markdown, page.contentHash);
+          const pageInsert = insertPage.run(
+            snapshotId,
+            page.url,
+            page.title,
+            page.markdown,
+            page.contentHash,
+            page.pageKind,
+            page.filePath,
+            page.language,
+          );
           const pageId = Number(pageInsert.lastInsertRowid);
-          const chunks = chunkMarkdown(page.title, page.markdown);
+          const chunks = chunkContent({
+            title: page.title,
+            content: page.markdown,
+            filePath: page.filePath,
+            language: page.language,
+          });
           for (const chunk of chunks) {
             insertChunk.run(
               input.sourceId,
@@ -973,6 +1089,9 @@ export function openCatalog(options: OpenCatalogOptions) {
               chunk.sectionTitle,
               chunk.chunkOrder,
               chunk.markdown,
+              page.pageKind,
+              page.filePath,
+              page.language,
             );
           }
         }
@@ -1045,8 +1164,6 @@ export function openCatalog(options: OpenCatalogOptions) {
       }
 
       const spec = JSON.parse(sourceRow.spec_json) as SourceSpec;
-      const canary = resolveSourceCanary(spec);
-
       db.prepare(`
         INSERT INTO canary_runs (id, source_id, status, checked_at, details_json)
         VALUES (?, ?, ?, ?, ?)
@@ -1072,7 +1189,7 @@ export function openCatalog(options: OpenCatalogOptions) {
         input.status,
         input.checkedAt,
         input.status,
-        addHoursIso(canary.everyHours),
+        addHoursIso(resolveCanaryEveryHours(spec)),
         input.checkedAt,
         input.sourceId,
       );
@@ -1169,12 +1286,15 @@ export function openCatalog(options: OpenCatalogOptions) {
         changedPageCount: number;
         unchangedPageCount: number;
       };
-      addedPages: Array<{ url: string; title: string }>;
-      removedPages: Array<{ url: string; title: string }>;
+      addedPages: Array<{ url: string; title: string; pageKind: 'document' | 'file'; filePath: string | null; language: string | null }>;
+      removedPages: Array<{ url: string; title: string; pageKind: 'document' | 'file'; filePath: string | null; language: string | null }>;
       changedPages: Array<{
         url: string;
         beforeTitle: string;
         afterTitle: string;
+        pageKind: 'document' | 'file';
+        filePath: string | null;
+        language: string | null;
         lineSummary: {
           addedLineCount: number;
           removedLineCount: number;
@@ -1214,7 +1334,7 @@ export function openCatalog(options: OpenCatalogOptions) {
 
       const loadSnapshotPages = (snapshotId: string): SnapshotPageRow[] =>
         db.prepare(`
-          SELECT url, title, markdown, content_hash
+          SELECT url, title, markdown, content_hash, page_kind, file_path, language
           FROM pages
           WHERE snapshot_id = ?
           ORDER BY url
@@ -1230,6 +1350,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         .map((page) => ({
           url: page.url,
           title: page.title,
+          pageKind: page.page_kind,
+          filePath: page.file_path,
+          language: page.language,
         }));
 
       const removedPages = beforePages
@@ -1237,6 +1360,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         .map((page) => ({
           url: page.url,
           title: page.title,
+          pageKind: page.page_kind,
+          filePath: page.file_path,
+          language: page.language,
         }));
 
       const summarizeLineDiff = (beforeMarkdown: string, afterMarkdown: string) => {
@@ -1277,6 +1403,9 @@ export function openCatalog(options: OpenCatalogOptions) {
           url: before.url,
           beforeTitle: before.title,
           afterTitle: after.title,
+          pageKind: after.page_kind,
+          filePath: after.file_path,
+          language: after.language,
           lineSummary: summarizeLineDiff(before.markdown, after.markdown),
         }));
 
@@ -1337,11 +1466,14 @@ export function openCatalog(options: OpenCatalogOptions) {
           c.page_url,
           c.page_title,
           c.section_title,
-          c.markdown
+          c.markdown,
+          c.page_kind,
+          c.file_path,
+          c.language
         FROM chunks c
         WHERE c.source_id = ?
           AND c.snapshot_id = ?
-        ORDER BY c.id
+      ORDER BY c.id
       `).all(input.sourceId, input.snapshotId) as Array<{
         chunk_id: number;
         source_id: string;
@@ -1350,6 +1482,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         page_title: string;
         section_title: string;
         markdown: string;
+        page_kind: 'document' | 'file';
+        file_path: string | null;
+        language: string | null;
       }>;
 
       return rows.map((row) => ({
@@ -1360,6 +1495,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         pageTitle: row.page_title,
         sectionTitle: row.section_title,
         markdown: row.markdown,
+        pageKind: row.page_kind,
+        filePath: row.file_path,
+        language: row.language,
         contentHash: sha256(row.markdown),
       }));
     },
@@ -1431,7 +1569,10 @@ export function openCatalog(options: OpenCatalogOptions) {
           c.page_url,
           c.page_title,
           c.section_title,
-          c.markdown
+          c.markdown,
+          c.page_kind,
+          c.file_path,
+          c.language
         FROM chunks c
         WHERE c.id IN (${chunkIds.map(() => '?').join(',')})
       `).all(...chunkIds) as Array<{
@@ -1442,6 +1583,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         page_title: string;
         section_title: string;
         markdown: string;
+        page_kind: 'document' | 'file';
+        file_path: string | null;
+        language: string | null;
       }>;
 
       return rows.map((row) => ({
@@ -1452,6 +1596,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         pageTitle: row.page_title,
         sectionTitle: row.section_title,
         markdown: row.markdown,
+        pageKind: row.page_kind,
+        filePath: row.file_path,
+        language: row.language,
       }));
     },
 
@@ -1954,7 +2101,10 @@ export function openCatalog(options: OpenCatalogOptions) {
           c.page_url,
           c.page_title,
           c.section_title,
-          c.markdown
+          c.markdown,
+          c.page_kind,
+          c.file_path,
+          c.language
         FROM chunks c
         WHERE c.id = ?
       `).get(chunkId) as
@@ -1966,6 +2116,9 @@ export function openCatalog(options: OpenCatalogOptions) {
             page_title: string;
             section_title: string;
             markdown: string;
+            page_kind: 'document' | 'file';
+            file_path: string | null;
+            language: string | null;
           }
         | undefined;
 
@@ -1981,6 +2134,9 @@ export function openCatalog(options: OpenCatalogOptions) {
         pageTitle: row.page_title,
         sectionTitle: row.section_title,
         markdown: row.markdown,
+        pageKind: row.page_kind,
+        filePath: row.file_path,
+        language: row.language,
       };
     },
   };

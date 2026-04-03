@@ -31,6 +31,12 @@ export function getAiocsDataDir(env: NodeJS.ProcessEnv = process.env): string {
   return target;
 }
 
+export function getAiocsGitMirrorsDir(env: NodeJS.ProcessEnv = process.env): string {
+  const target = join(getAiocsDataDir(env), 'git-mirrors');
+  mkdirSync(target, { recursive: true });
+  return target;
+}
+
 export function getAiocsConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.AIOCS_CONFIG_DIR;
   if (override) {

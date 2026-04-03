@@ -7,6 +7,40 @@ import { describe, expect, it } from 'vitest';
 import { loadSourceSpec } from '../../src/spec/source-spec.js';
 
 describe('loadSourceSpec', () => {
+  it('defaults missing kind to web for legacy source specs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aiocs-source-spec-legacy-'));
+    const specPath = join(root, 'legacy.yaml');
+
+    writeFileSync(specPath, `
+id: legacy-docs
+label: Legacy Docs
+startUrls:
+  - https://example.com/docs
+allowedHosts:
+  - example.com
+discovery:
+  include:
+    - https://example.com/docs/**
+  exclude: []
+  maxPages: 25
+extract:
+  strategy: selector
+  selector: article
+normalize:
+  prependSourceComment: true
+schedule:
+  everyHours: 24
+`);
+
+    try {
+      const spec = await loadSourceSpec(specPath);
+
+      expect(spec.kind).toBe('web');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('loads and validates a YAML source spec', async () => {
     const root = mkdtempSync(join(tmpdir(), 'aiocs-source-spec-'));
     const specPath = join(root, 'hyperliquid.yaml');
@@ -38,10 +72,77 @@ schedule:
     try {
       const spec = await loadSourceSpec(specPath);
 
+      expect(spec.kind).toBe('web');
+      if (spec.kind !== 'web') {
+        throw new Error('expected a web source spec');
+      }
       expect(spec.id).toBe('hyperliquid');
       expect(spec.extract.strategy).toBe('clipboardButton');
       expect(spec.discovery.maxPages).toBe(250);
       expect(spec.schedule.everyHours).toBe(24);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('loads and validates a git source spec', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aiocs-source-spec-git-'));
+    const specPath = join(root, 'repo.yaml');
+
+    writeFileSync(specPath, `
+kind: git
+id: nktkas-hyperliquid
+label: nktkas/hyperliquid Source
+repo:
+  url: https://github.com/nktkas/hyperliquid.git
+  ref: main
+  include:
+    - README.md
+    - src/**
+  exclude:
+    - dist/**
+    - node_modules/**
+  maxFiles: 500
+  textFileMaxBytes: 131072
+  auth:
+    tokenFromEnv: AIOCS_GITHUB_TOKEN
+    username: x-access-token
+    scheme: basic
+schedule:
+  everyHours: 24
+canary:
+  everyHours: 6
+  checks:
+    - path: README.md
+      expectedText: Hyperliquid
+      minContentLength: 40
+`);
+
+    try {
+      const spec = await loadSourceSpec(specPath);
+
+      expect(spec.kind).toBe('git');
+      if (spec.kind !== 'git') {
+        throw new Error('expected a git source spec');
+      }
+      expect(spec.kind).toBe('git');
+      expect(spec.repo.ref).toBe('main');
+      expect(spec.repo.include).toEqual(['README.md', 'src/**']);
+      expect(spec.repo.auth).toEqual({
+        tokenFromEnv: 'AIOCS_GITHUB_TOKEN',
+        username: 'x-access-token',
+        scheme: 'basic',
+      });
+      expect(spec.canary).toEqual({
+        everyHours: 6,
+        checks: [
+          {
+            path: 'README.md',
+            expectedText: 'Hyperliquid',
+            minContentLength: 40,
+          },
+        ],
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -126,6 +227,10 @@ canary:
     try {
       const spec = await loadSourceSpec(specPath);
 
+      expect(spec.kind).toBe('web');
+      if (spec.kind !== 'web') {
+        throw new Error('expected a web source spec');
+      }
       expect(spec.auth).toEqual({
         headers: [
           {
@@ -194,6 +299,29 @@ auth:
 
     try {
       await expect(loadSourceSpec(specPath)).rejects.toThrow(/must be included in allowedHosts/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects git source specs with unsupported repo protocols', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aiocs-source-spec-git-invalid-'));
+    const specPath = join(root, 'repo.yaml');
+
+    writeFileSync(specPath, `
+kind: git
+id: private-repo
+label: Private Repo
+repo:
+  url: ssh://git@github.com/example/private.git
+  include:
+    - src/**
+schedule:
+  everyHours: 24
+`);
+
+    try {
+      await expect(loadSourceSpec(specPath)).rejects.toThrow(/Unsupported git source protocol/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

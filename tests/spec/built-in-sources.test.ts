@@ -13,11 +13,13 @@ describe('built-in source specs', () => {
 
     expect(entries).toEqual([
       'hyperliquid.yaml',
+      'nktkas-hyperliquid.yaml',
     ]);
 
     const specs = await Promise.all(entries.map((entry) => loadSourceSpec(join(sourcesDir, entry))));
     expect(specs.map((spec) => spec.id)).toEqual([
       'hyperliquid',
+      'nktkas-hyperliquid',
     ]);
   });
 });
