@@ -22,6 +22,7 @@ services:
       AIOCS_QDRANT_URL: ${AIOCS_QDRANT_URL:-http://aiocs-qdrant:6333}
       AIOCS_OLLAMA_BASE_URL: ${AIOCS_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       AIOCS_OLLAMA_EMBEDDING_MODEL: ${AIOCS_OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      AIOCS_OLLAMA_MAX_INPUT_CHARS: ${AIOCS_OLLAMA_MAX_INPUT_CHARS:-3000}
     volumes:
       - ${HOME}/.aiocs:/root/.aiocs
       - ./sources:/app/sources:ro
