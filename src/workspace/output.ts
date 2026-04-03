@@ -3,6 +3,9 @@ import { sha256 } from '../catalog/fingerprint.js';
 import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
 import {
   assessWorkspaceArtifactFreshness,
+  getExpectedArtifactRawInputIds,
+  getRawInputArtifactBundle,
+  getWorkspaceAnswerPath,
   getSourceArtifactBundle,
   getWorkspaceIndexPath,
   getWorkspaceLatestSnapshotMap,
@@ -14,7 +17,19 @@ import { readWorkspaceArtifact, writeWorkspaceArtifact } from './storage.js';
 
 type Catalog = ReturnType<typeof openCatalog>;
 
-type OutputFormat = 'report' | 'slides' | 'summary';
+type OutputFormat = 'report' | 'slides' | 'summary' | 'note';
+type WorkspaceGenerationContext = {
+  contextSections: string[];
+  provenanceEntries: Array<{
+    sourceId: string;
+    snapshotId: string;
+    chunkIds: number[];
+  }>;
+  rawInputProvenanceEntries: Array<{
+    rawInputId: string;
+    chunkIds: number[];
+  }>;
+};
 
 function ensureLeadingTitle(content: string, title: string): string {
   const lines = content.trim().split('\n');
@@ -84,12 +99,40 @@ function mergeProvenance(
   }));
 }
 
+function mergeRawInputProvenance(
+  entries: Array<{
+    rawInputId: string;
+    chunkIds: number[];
+  }>,
+): Array<{
+  rawInputId: string;
+  chunkIds: number[];
+}> {
+  const grouped = new Map<string, Set<number>>();
+  for (const entry of entries) {
+    const chunkIds = grouped.get(entry.rawInputId) ?? new Set<number>();
+    for (const chunkId of entry.chunkIds) {
+      chunkIds.add(chunkId);
+    }
+    grouped.set(entry.rawInputId, chunkIds);
+  }
+
+  return [...grouped.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([rawInputId, chunkIds]) => ({
+      rawInputId,
+      chunkIds: [...chunkIds].sort((left, right) => left - right),
+    }));
+}
+
 function buildOutputPrompt(format: OutputFormat, prompt: string | undefined, context: string): string {
   const instruction = format === 'slides'
     ? 'Create a Marp slide deck from this workspace context.'
     : format === 'report'
       ? 'Create a research report from this workspace context.'
-      : 'Create a compact Markdown summary from this workspace context.';
+      : format === 'note'
+        ? 'Create a tightly scoped Markdown note that answers the user question from this workspace context.'
+        : 'Create a compact Markdown summary from this workspace context.';
   const requirements = format === 'slides'
     ? [
         '- Output valid Markdown only.',
@@ -121,7 +164,7 @@ export async function generateWorkspaceOutput(input: {
   catalog: Catalog;
   dataDir: string;
   workspaceId: string;
-  format: OutputFormat;
+  format: 'report' | 'slides' | 'summary';
   name?: string;
   prompt?: string;
   env?: NodeJS.ProcessEnv;
@@ -139,11 +182,32 @@ export async function generateWorkspaceOutput(input: {
     );
   }
 
+  const generation = await collectWorkspaceGenerationContext(input);
+  return generateWorkspaceArtifact({
+    catalog: input.catalog,
+    dataDir: input.dataDir,
+    workspaceId: input.workspaceId,
+    format: input.format,
+    context: generation,
+    path: getWorkspaceOutputPath(input.format, input.name),
+    artifactKind: input.format,
+    ...(input.name ? { name: input.name } : {}),
+    ...(input.prompt ? { prompt: input.prompt } : {}),
+    ...(input.env ? { env: input.env } : {}),
+  });
+}
+
+async function collectWorkspaceGenerationContext(input: {
+  catalog: Catalog;
+  dataDir: string;
+  workspaceId: string;
+}): Promise<WorkspaceGenerationContext> {
   const bindings = input.catalog.listWorkspaceSourceBindings(input.workspaceId);
-  if (bindings.length === 0) {
+  const rawInputs = input.catalog.listWorkspaceRawInputs(input.workspaceId);
+  if (bindings.length === 0 && rawInputs.length === 0) {
     throw new AiocsError(
       AIOCS_ERROR_CODES.invalidArgument,
-      `Workspace '${input.workspaceId}' has no bound sources`,
+      `Workspace '${input.workspaceId}' has no bound sources or raw inputs`,
     );
   }
   const boundSourceIds = bindings.map((binding) => binding.sourceId);
@@ -160,11 +224,8 @@ export async function generateWorkspaceOutput(input: {
   const freshArtifactPaths: string[] = [];
 
   const contextSections: string[] = [];
-  const provenanceEntries: Array<{
-    sourceId: string;
-    snapshotId: string;
-    chunkIds: number[];
-  }> = [];
+  const provenanceEntries: WorkspaceGenerationContext['provenanceEntries'] = [];
+  const rawInputProvenanceEntries: WorkspaceGenerationContext['rawInputProvenanceEntries'] = [];
 
   const indexArtifact = input.catalog.getWorkspaceArtifact(input.workspaceId, getWorkspaceIndexPath());
   if (indexArtifact) {
@@ -187,6 +248,7 @@ export async function generateWorkspaceOutput(input: {
     });
     contextSections.push(indexContent.content);
     provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, getWorkspaceIndexPath()));
+    rawInputProvenanceEntries.push(...input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, getWorkspaceIndexPath()));
   }
 
   for (const binding of bindings) {
@@ -219,6 +281,40 @@ export async function generateWorkspaceOutput(input: {
       });
       contextSections.push(content.content);
       provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path));
+      rawInputProvenanceEntries.push(...input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, path));
+    }
+  }
+
+  for (const rawInput of rawInputs) {
+    const bundle = getRawInputArtifactBundle(rawInput.id);
+    for (const path of [bundle.summaryPath, bundle.conceptPath]) {
+      const artifact = input.catalog.getWorkspaceArtifact(input.workspaceId, path);
+      if (!artifact) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.workspaceArtifactNotFound,
+          `Workspace '${input.workspaceId}' is missing artifact '${path}' required for output generation`,
+        );
+      }
+
+      const rawInputProvenance = input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, path);
+      const expectedRawInputIds = getExpectedArtifactRawInputIds(path, rawInputs.map((entry) => entry.id));
+      const rawMissing = expectedRawInputIds.some((rawInputId) => (
+        !rawInputProvenance.some((entry) => entry.rawInputId === rawInputId)
+      ));
+      if (artifact.stale || rawMissing) {
+        staleArtifactPaths.push(path);
+      } else {
+        freshArtifactPaths.push(path);
+      }
+
+      const content = await readWorkspaceArtifact({
+        dataDir: input.dataDir,
+        workspaceId: input.workspaceId,
+        path,
+      });
+      contextSections.push(content.content);
+      provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path));
+      rawInputProvenanceEntries.push(...rawInputProvenance);
     }
   }
   input.catalog.setWorkspaceArtifactsStale({
@@ -241,8 +337,40 @@ export async function generateWorkspaceOutput(input: {
     );
   }
 
+  return {
+    contextSections,
+    provenanceEntries,
+    rawInputProvenanceEntries,
+  };
+}
+
+async function generateWorkspaceArtifact(input: {
+  catalog: Catalog;
+  dataDir: string;
+  workspaceId: string;
+  format: OutputFormat;
+  path: string;
+  artifactKind: 'report' | 'slides' | 'summary' | 'note';
+  context: WorkspaceGenerationContext;
+  name?: string;
+  prompt?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{
+  workspaceId: string;
+  format: OutputFormat;
+  path: string;
+  artifactCount: number;
+}> {
+  const workspace = input.catalog.getWorkspace(input.workspaceId);
+  if (!workspace) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.workspaceNotFound,
+      `Unknown workspace '${input.workspaceId}'`,
+    );
+  }
+
   const effectiveCompilerProfile = resolveEffectiveWorkspaceCompilerProfile(workspace.compilerProfile, input.env);
-  const prompt = buildOutputPrompt(input.format, input.prompt, contextSections.join('\n\n'));
+  const prompt = buildOutputPrompt(input.format, input.prompt, input.context.contextSections.join('\n\n'));
   const generated = await compileWithLmStudio({
     profile: effectiveCompilerProfile,
     systemPrompt: 'You create provenance-backed workspace outputs. Return only the final Markdown document. Never emit reasoning, analysis, tool traces, <think> tags, or channel/control tokens.',
@@ -259,18 +387,17 @@ export async function generateWorkspaceOutput(input: {
   const content = input.format === 'slides'
     ? normalizeSlides(titled)
     : `${titled.trim()}\n`;
-  const path = getWorkspaceOutputPath(input.format, input.name);
   await writeWorkspaceArtifact({
     dataDir: input.dataDir,
     workspaceId: input.workspaceId,
-    path,
+    path: input.path,
     content,
   });
 
   input.catalog.upsertWorkspaceArtifact({
     workspaceId: input.workspaceId,
-    path,
-    kind: input.format,
+    path: input.path,
+    kind: input.artifactKind,
     contentHash: sha256(content),
     compilerMetadata: {
       provider: 'lmstudio',
@@ -284,13 +411,45 @@ export async function generateWorkspaceOutput(input: {
         markdown: content,
       },
     ],
-    provenance: mergeProvenance(provenanceEntries),
+    provenance: mergeProvenance(input.context.provenanceEntries),
+    ...(input.context.rawInputProvenanceEntries.length > 0
+      ? { rawInputProvenance: mergeRawInputProvenance(input.context.rawInputProvenanceEntries) }
+      : {}),
   });
 
   return {
     workspaceId: input.workspaceId,
     format: input.format,
-    path,
+    path: input.path,
     artifactCount: input.catalog.listWorkspaceArtifacts(input.workspaceId).length,
   };
+}
+
+export async function answerWorkspaceQuestion(input: {
+  catalog: Catalog;
+  dataDir: string;
+  workspaceId: string;
+  question: string;
+  format: OutputFormat;
+  name?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{
+  workspaceId: string;
+  format: OutputFormat;
+  path: string;
+  artifactCount: number;
+}> {
+  const generation = await collectWorkspaceGenerationContext(input);
+  return generateWorkspaceArtifact({
+    catalog: input.catalog,
+    dataDir: input.dataDir,
+    workspaceId: input.workspaceId,
+    format: input.format,
+    prompt: input.question,
+    context: generation,
+    path: getWorkspaceAnswerPath(input.format, input.name),
+    artifactKind: input.format === 'note' ? 'note' : input.format,
+    ...(input.name ? { name: input.name } : {}),
+    ...(input.env ? { env: input.env } : {}),
+  });
 }

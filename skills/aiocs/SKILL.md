@@ -13,6 +13,7 @@ Use this skill when you need authoritative local documentation lookup through th
 - You need authoritative local docs for an exchange, SDK, or product without browsing the live site every time.
 - You need reusable reference search over a curated external git repository that already lives in `aiocs`.
 - You need to read from a compiled `aiocs` workspace wiki or inspect derived workspace artifacts.
+- You need to inspect workspace status, queued compile health, or raw ingested evidence before deciding whether curation is needed.
 - You want machine-readable search/show/diff/coverage results for an AI agent.
 - You need hybrid docs retrieval with lexical plus semantic/vector recall.
 - You need to validate runtime health before relying on the local docs catalog.
@@ -83,6 +84,8 @@ Search or inspect a compiled workspace:
 ```bash
 docs --json workspace status market-structure
 docs --json workspace search market-structure "transport design" --scope mixed
+docs --json workspace ingest list market-structure
+docs --json workspace ingest search market-structure "fee tier"
 docs --json workspace artifact list market-structure
 docs --json workspace artifact show market-structure derived/index.md
 docs --json workspace lint market-structure
@@ -146,6 +149,9 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `workspace_list`
 - `workspace_status`
 - `workspace_search`
+- `workspace_ingest_list`
+- `workspace_ingest_show`
+- `workspace_ingest_search`
 - `workspace_artifact_list`
 - `workspace_artifact_show`
 - `workspace_lint`

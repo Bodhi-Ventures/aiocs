@@ -117,12 +117,16 @@ docs --json verify coverage hyperliquid /absolute/path/to/reference.md
 Research workspaces:
 
 ```bash
-docs --json workspace create market-structure --label "Market Structure"
+docs --json workspace create market-structure --label "Market Structure" --auto-compile
 docs --json workspace bind market-structure hyperliquid nktkas-hyperliquid
 docs --json workspace compile market-structure
+docs --json workspace queue-run
 docs --json workspace search market-structure "transport design" --scope mixed
 docs --json workspace artifact show market-structure derived/index.md
 docs --json workspace output market-structure report --name weekly-brief
+docs --json workspace answer market-structure note "What changed in websocket transport?" --name websocket-note
+docs --json workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
+docs --json workspace sync obsidian market-structure /absolute/path/to/vault
 ```
 
 If bound source snapshots have changed since the last compile, rerun `workspace compile` before `workspace output`. The output path now fails closed on stale derived artifacts instead of synthesizing reports from outdated summaries.
@@ -151,6 +155,8 @@ If a Codex agent has access to the `aiocs-mcp` server, prefer these MCP tools ov
 - `workspace_list`
 - `workspace_status`
 - `workspace_search`
+- `workspace_ingest_list`
+- `workspace_ingest_search`
 - `workspace_artifact_list`
 - `workspace_artifact_show`
 - `workspace_lint`

@@ -55,16 +55,25 @@ All of these support the root-level `--json` flag:
 - `project link`
 - `project unlink`
 - `workspace create`
+- `workspace configure`
 - `workspace list`
 - `workspace bind`
 - `workspace unbind`
 - `workspace compile`
+- `workspace queue-run`
 - `workspace status`
 - `workspace search`
+- `workspace ingest add`
+- `workspace ingest list`
+- `workspace ingest show`
+- `workspace ingest search`
+- `workspace ingest remove`
 - `workspace artifact list`
 - `workspace artifact show`
 - `workspace lint`
 - `workspace output`
+- `workspace answer`
+- `workspace sync obsidian`
 - `backup export`
 - `backup import`
 - `embeddings status`
@@ -307,6 +316,18 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
 }
 ```
 
+#### `workspace.configure`
+
+```json
+{
+  "workspace": {
+    "id": "market-structure",
+    "label": "Market Structure",
+    "autoCompileEnabled": true
+  }
+}
+```
+
 #### `workspace.compile`
 
 ```json
@@ -315,6 +336,7 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
   "skipped": false,
   "sourceFingerprint": "sha256...",
   "changedSourceIds": ["hyperliquid"],
+  "changedRawInputIds": [],
   "updatedArtifactPaths": [
     "derived/sources/hyperliquid/summary.md",
     "derived/concepts/hyperliquid.md",
@@ -325,13 +347,31 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
 }
 ```
 
+#### `workspace.queue-run`
+
+```json
+{
+  "processedJobs": 1,
+  "succeededJobs": [
+    {
+      "workspaceId": "market-structure",
+      "sourceFingerprint": "sha256...",
+      "changedSourceIds": ["hyperliquid"],
+      "changedRawInputIds": []
+    }
+  ],
+  "failedJobs": []
+}
+```
+
 #### `workspace.status`
 
 ```json
 {
   "workspace": {
     "id": "market-structure",
-    "label": "Market Structure"
+    "label": "Market Structure",
+    "autoCompileEnabled": true
   },
   "bindings": [
     {
@@ -349,10 +389,89 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
       "chunkCount": 3
     }
   ],
+  "compileJob": {
+    "workspaceId": "market-structure",
+    "status": "pending",
+    "requestedSourceIds": ["hyperliquid"],
+    "requestedRawInputIds": [],
+    "requestedFingerprint": null
+  },
+  "rawInputs": [],
+  "syncTargets": [],
+  "questionRuns": [],
+  "links": [],
+  "graph": {
+    "linkCount": 4,
+    "brokenLinkCount": 0,
+    "orphanArtifactCount": 0
+  },
+  "lintSummary": {
+    "status": "pass",
+    "findingCount": 0,
+    "staleArtifactCount": 0,
+    "missingProvenanceCount": 0,
+    "missingArtifactCount": 0,
+    "brokenLinkCount": 0,
+    "orphanArtifactCount": 0,
+    "suggestedConceptCount": 0
+  },
+  "health": {
+    "status": "healthy",
+    "staleArtifactCount": 0,
+    "pendingCompileJobs": 0,
+    "failedCompileJobs": 0,
+    "brokenLinkCount": 0,
+    "orphanArtifactCount": 0,
+    "rawInputCount": 0,
+    "lintFindingCount": 0
+  },
   "compileRuns": [
     {
       "id": "wrkcmp_...",
       "status": "success"
+    }
+  ]
+}
+```
+
+#### `workspace.ingest.*`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "rawInput": {
+    "id": "markdown-dir-notes-abc123def0",
+    "workspaceId": "market-structure",
+    "kind": "markdown-dir",
+    "label": "Research notes",
+    "sourcePath": "/absolute/path/to/notes",
+    "storagePath": "raw/markdown-dir-notes-abc123def0",
+    "extractedTextPath": null,
+    "contentHash": "sha256...",
+    "chunkCount": 12
+  }
+}
+```
+
+Raw-input search returns:
+
+```json
+{
+  "workspaceId": "market-structure",
+  "query": "fee tier",
+  "total": 1,
+  "limit": 10,
+  "offset": 0,
+  "hasMore": false,
+  "results": [
+    {
+      "rawInputId": "markdown-dir-notes-abc123def0",
+      "kind": "markdown-dir",
+      "label": "Research notes",
+      "sectionTitle": "Fee schedule",
+      "markdown": "...",
+      "filePath": "notes.md",
+      "score": 0.42
     }
   ]
 }
@@ -439,7 +558,8 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
       "snapshotId": "snp_...",
       "chunkIds": [42, 43]
     }
-  ]
+  ],
+  "rawInputProvenance": []
 }
 ```
 
@@ -453,7 +573,10 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
     "findingCount": 1,
     "staleArtifactCount": 1,
     "missingProvenanceCount": 0,
-    "missingArtifactCount": 0
+    "missingArtifactCount": 0,
+    "brokenLinkCount": 0,
+    "orphanArtifactCount": 0,
+    "suggestedConceptCount": 0
   },
   "findings": [
     {
@@ -473,21 +596,37 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
   "workspaceId": "market-structure",
   "format": "report",
   "path": "outputs/reports/weekly-brief.md",
-  "artifact": {
+  "artifactCount": 8
+}
+```
+
+#### `workspace.answer`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "format": "note",
+  "path": "derived/notes/websocket-note.md",
+  "artifactCount": 9,
+  "questionRun": {
+    "id": "wrkq_...",
     "workspaceId": "market-structure",
-    "path": "outputs/reports/weekly-brief.md",
-    "kind": "report",
-    "stale": false
-  },
-  "provenance": [
-    {
-      "workspaceId": "market-structure",
-      "path": "outputs/reports/weekly-brief.md",
-      "sourceId": "hyperliquid",
-      "snapshotId": "snp_...",
-      "chunkIds": [42, 43]
-    }
-  ]
+    "question": "What changed in websocket transport?",
+    "format": "note",
+    "artifactPath": "derived/notes/websocket-note.md",
+    "status": "success"
+  }
+}
+```
+
+#### `workspace.sync.obsidian`
+
+```json
+{
+  "workspaceId": "market-structure",
+  "vaultPath": "/absolute/path/to/vault",
+  "targetPath": "/absolute/path/to/vault/aiocs/market-structure",
+  "exportSubdir": "aiocs/market-structure"
 }
 ```
 

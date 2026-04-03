@@ -110,6 +110,14 @@ describe('workspace linting', () => {
           },
         ],
         provenance: [],
+        links: [
+          {
+            fromPath: 'derived/notes/missing-provenance.md',
+            toPath: 'derived/notes/missing-target.md',
+            relationKind: 'explicit_link',
+            anchorText: 'derived/notes/missing-target.md',
+          },
+        ],
       });
 
       catalog.recordSuccessfulSnapshot({
@@ -138,7 +146,12 @@ describe('workspace linting', () => {
           kind: 'missing-provenance',
           artifactPath: 'derived/notes/missing-provenance.md',
         }),
+        expect.objectContaining({
+          kind: 'broken-artifact-link',
+          artifactPath: 'derived/notes/missing-provenance.md',
+        }),
       ]));
+      expect(report.summary.brokenLinkCount).toBeGreaterThan(0);
       expect(catalog.getWorkspaceArtifact('linted', 'derived/sources/hyperliquid/summary.md')).toEqual(
         expect.objectContaining({
           stale: true,

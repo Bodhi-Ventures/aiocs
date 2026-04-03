@@ -381,4 +381,101 @@ describe('workspace compile pipeline', () => {
       catalog.close();
     }
   });
+
+  it('compiles raw workspace inputs and reports changed raw input ids', async () => {
+    const catalog = openCatalog({ dataDir: root });
+
+    try {
+      catalog.createWorkspace({
+        id: 'raw-workspace',
+        label: 'Raw Workspace',
+        compilerProfile: {
+          provider: 'lmstudio',
+          model: 'google/gemma-4-26b-a4b',
+          temperature: 0.1,
+          topP: 0.9,
+          maxInputChars: 12_000,
+          maxOutputTokens: 4_096,
+          concurrency: 1,
+        },
+        defaultOutputFormats: ['report'],
+      });
+
+      catalog.upsertWorkspaceRawInput({
+        id: 'paper-notes',
+        workspaceId: 'raw-workspace',
+        kind: 'markdown-dir',
+        label: 'Paper Notes',
+        sourcePath: join(root, 'paper-notes'),
+        storagePath: 'raw/paper-notes',
+        contentHash: 'hash-one',
+        metadata: {
+          absolutePath: join(root, 'paper-notes'),
+        },
+        chunks: [
+          {
+            sectionTitle: 'Paper',
+            markdown: '# Paper\n\nInteresting raw notes.',
+            filePath: 'paper.md',
+          },
+        ],
+      });
+
+      const firstCompile = await compileWorkspace({
+        catalog,
+        dataDir: root,
+        workspaceId: 'raw-workspace',
+      });
+
+      expect(firstCompile.skipped).toBe(false);
+      expect(firstCompile.changedSourceIds).toEqual([]);
+      expect(firstCompile.changedRawInputIds).toEqual(['paper-notes']);
+      expect(firstCompile.updatedArtifactPaths).toEqual([
+        'derived/index.md',
+        'derived/raw/paper-notes/concept.md',
+        'derived/raw/paper-notes/summary.md',
+      ]);
+      expect(catalog.listWorkspaceArtifactRawInputProvenance('raw-workspace', 'derived/raw/paper-notes/summary.md')).toEqual([
+        expect.objectContaining({
+          rawInputId: 'paper-notes',
+        }),
+      ]);
+
+      catalog.upsertWorkspaceRawInput({
+        id: 'paper-notes',
+        workspaceId: 'raw-workspace',
+        kind: 'markdown-dir',
+        label: 'Paper Notes',
+        sourcePath: join(root, 'paper-notes'),
+        storagePath: 'raw/paper-notes',
+        contentHash: 'hash-two',
+        metadata: {
+          absolutePath: join(root, 'paper-notes'),
+        },
+        chunks: [
+          {
+            sectionTitle: 'Paper',
+            markdown: '# Paper\n\nUpdated raw notes.',
+            filePath: 'paper.md',
+          },
+        ],
+      });
+
+      const secondCompile = await compileWorkspace({
+        catalog,
+        dataDir: root,
+        workspaceId: 'raw-workspace',
+      });
+
+      expect(secondCompile.skipped).toBe(false);
+      expect(secondCompile.changedRawInputIds).toEqual(['paper-notes']);
+      expect(secondCompile.updatedArtifactPaths).toEqual([
+        'derived/index.md',
+        'derived/raw/paper-notes/concept.md',
+        'derived/raw/paper-notes/summary.md',
+      ]);
+    } finally {
+      catalog.close();
+    }
+  });
 });

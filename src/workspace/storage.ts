@@ -1,5 +1,5 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, normalize, relative, resolve } from 'node:path';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, normalize, relative, resolve } from 'node:path';
 
 import {
   getAiocsWorkspacesDir,
@@ -61,6 +61,18 @@ function resolveWorkspaceArtifactAbsolutePath(
   }
 
   return absolutePath;
+}
+
+export function resolveWorkspacePath(input: {
+  dataDir: string;
+  workspaceId: string;
+  relativePath: string;
+}): string {
+  return resolveWorkspaceArtifactAbsolutePath(
+    input.dataDir,
+    input.workspaceId,
+    input.relativePath,
+  );
 }
 
 export function ensureWorkspaceDirectories(input: {
@@ -132,6 +144,58 @@ export async function deleteWorkspaceArtifact(input: {
     input.path,
   );
   await rm(absolutePath, { force: true });
+}
+
+export async function deleteWorkspacePath(input: {
+  dataDir: string;
+  workspaceId: string;
+  path: string;
+}): Promise<void> {
+  const absolutePath = resolveWorkspaceArtifactAbsolutePath(
+    input.dataDir,
+    input.workspaceId,
+    input.path,
+  );
+  await rm(absolutePath, { recursive: true, force: true });
+}
+
+export async function copyPathIntoWorkspace(input: {
+  dataDir: string;
+  workspaceId: string;
+  sourcePath: string;
+  targetPath: string;
+}): Promise<{ path: string; absolutePath: string }> {
+  ensureWorkspaceDirectories(input);
+  const absolutePath = resolveWorkspaceArtifactAbsolutePath(
+    input.dataDir,
+    input.workspaceId,
+    input.targetPath,
+  );
+  await mkdir(join(absolutePath, '..'), { recursive: true });
+  await cp(input.sourcePath, absolutePath, {
+    force: true,
+    recursive: true,
+    preserveTimestamps: true,
+  });
+  return {
+    path: validateWorkspaceRelativePath(input.targetPath),
+    absolutePath,
+  };
+}
+
+export async function syncWorkspaceTree(input: {
+  dataDir: string;
+  workspaceId: string;
+  targetRoot: string;
+}): Promise<void> {
+  const layout = ensureWorkspaceDirectories(input);
+  await rm(input.targetRoot, { recursive: true, force: true });
+  await mkdir(dirname(input.targetRoot), { recursive: true });
+  await cp(layout.workspaceRoot, input.targetRoot, {
+    force: true,
+    recursive: true,
+    preserveTimestamps: true,
+  });
 }
 
 export async function writeWorkspaceManifest(input: {

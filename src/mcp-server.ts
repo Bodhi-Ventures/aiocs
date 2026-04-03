@@ -8,6 +8,7 @@ import { AiocsError, AIOCS_ERROR_CODES, toAiocsError } from './errors.js';
 import { packageDescription, packageName, packageVersion } from './runtime/package-metadata.js';
 import {
   backfillEmbeddings,
+  answerWorkspace,
   clearEmbeddings,
   compileWorkspaceArtifacts,
   createWorkspace,
@@ -18,26 +19,34 @@ import {
   getEmbeddingStatus,
   getDoctorReport,
   getWorkspaceStatus,
+  ingestWorkspaceRawInput,
   importCatalogBackup,
   initManagedSources,
   linkProjectSources,
   listWorkspaceArtifacts,
   listWorkspaceRecords,
+  listWorkspaceRawInputsRecord,
   listSnapshotsForSource,
   listSources,
   lintWorkspaceArtifacts,
   refreshDueSources,
   runSourceCanaries,
   runEmbeddingWorker,
+  runQueuedWorkspaceCompiles,
   searchCatalog,
+  searchWorkspaceRawInputCatalog,
   searchWorkspaceCatalog,
   showChunk,
   showWorkspaceArtifact,
+  showWorkspaceRawInput,
+  syncWorkspaceToObsidianVault,
   unlinkProjectSources,
   unbindWorkspaceSources,
+  updateWorkspaceSettings,
   upsertSourceFromSpecFile,
   verifyCoverage,
   bindWorkspaceSources,
+  removeWorkspaceRawInput,
 } from './services.js';
 
 const doctorCheckSchema = z.object({
@@ -222,6 +231,7 @@ const workspaceSchema = z.object({
   id: z.string(),
   label: z.string(),
   purpose: z.string().nullable(),
+  autoCompileEnabled: z.boolean(),
   compilerProfile: z.object({
     provider: z.literal('lmstudio'),
     model: z.string(),
@@ -239,6 +249,89 @@ const workspaceSchema = z.object({
   lastCompiledAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+});
+
+const workspaceCompileJobSchema = z.object({
+  workspaceId: z.string(),
+  status: z.enum(['pending', 'running', 'succeeded', 'failed']),
+  requestedSourceIds: z.array(z.string()),
+  requestedRawInputIds: z.array(z.string()),
+  requestedFingerprint: z.string().nullable(),
+  attemptCount: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  claimedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  errorMessage: z.string().nullable(),
+});
+
+const workspaceRawInputSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  kind: z.enum(['markdown-dir', 'pdf', 'image']),
+  label: z.string(),
+  sourcePath: z.string(),
+  storagePath: z.string(),
+  extractedTextPath: z.string().nullable(),
+  contentHash: z.string(),
+  metadata: z.record(z.string(), z.unknown()),
+  chunkCount: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const workspaceSyncTargetSchema = z.object({
+  workspaceId: z.string(),
+  kind: z.enum(['obsidian']),
+  targetPath: z.string(),
+  exportSubdir: z.string(),
+  lastSyncedAt: z.string().nullable(),
+  lastSyncStatus: z.enum(['success', 'failed']).nullable(),
+  lastErrorMessage: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const workspaceQuestionRunSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  question: z.string(),
+  format: z.enum(['report', 'slides', 'summary', 'note']),
+  artifactPath: z.string(),
+  status: z.enum(['success', 'failed']),
+  errorMessage: z.string().nullable(),
+  createdAt: z.string(),
+  completedAt: z.string(),
+});
+
+const workspaceArtifactRawInputProvenanceSchema = z.object({
+  workspaceId: z.string(),
+  path: z.string(),
+  rawInputId: z.string(),
+  chunkIds: z.array(z.number().int().nonnegative()),
+});
+
+const workspaceArtifactLinkSchema = z.object({
+  workspaceId: z.string(),
+  fromPath: z.string(),
+  toPath: z.string(),
+  relationKind: z.enum(['explicit_link', 'derived_from', 'mentions', 'related_to', 'expands', 'index_entry', 'summary_of', 'concept_of', 'output_depends_on']),
+  anchorText: z.string().nullable(),
+  source: z.enum(['compiler', 'system']),
+  broken: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const workspaceHealthSchema = z.object({
+  status: z.enum(['healthy', 'degraded']),
+  staleArtifactCount: z.number().int().nonnegative(),
+  pendingCompileJobs: z.number().int().nonnegative(),
+  failedCompileJobs: z.number().int().nonnegative(),
+  brokenLinkCount: z.number().int().nonnegative(),
+  orphanArtifactCount: z.number().int().nonnegative(),
+  rawInputCount: z.number().int().nonnegative(),
+  lintFindingCount: z.number().int().nonnegative(),
 });
 
 const workspaceBindingSchema = z.object({
@@ -275,14 +368,28 @@ const workspaceLintSchema = z.object({
     staleArtifactCount: z.number().int().nonnegative(),
     missingProvenanceCount: z.number().int().nonnegative(),
     missingArtifactCount: z.number().int().nonnegative(),
+    brokenLinkCount: z.number().int().nonnegative(),
+    orphanArtifactCount: z.number().int().nonnegative(),
+    suggestedConceptCount: z.number().int().nonnegative(),
   }),
   findings: z.array(z.object({
-    kind: z.enum(['stale-artifact', 'missing-provenance', 'missing-artifact']),
+    kind: z.enum(['stale-artifact', 'missing-provenance', 'missing-artifact', 'broken-artifact-link', 'orphan-artifact', 'suggested-concept']),
     severity: z.literal('warn'),
     summary: z.string(),
     artifactPath: z.string().optional(),
     sourceId: z.string().optional(),
+    rawInputId: z.string().optional(),
   })),
+});
+
+const workspaceRawInputSearchResultSchema = z.object({
+  rawInputId: z.string(),
+  kind: z.enum(['markdown-dir', 'pdf', 'image']),
+  label: z.string(),
+  sectionTitle: z.string(),
+  markdown: z.string(),
+  filePath: z.string().nullable(),
+  score: z.number(),
 });
 
 const workspaceSearchResultSchema = z.union([
@@ -394,9 +501,14 @@ const toolHandlers: Record<string, ToolHandler> = {
     workspaceId: args.workspaceId as string,
     label: args.label as string,
     ...(typeof args.purpose === 'string' ? { purpose: args.purpose } : {}),
+    ...(typeof args.autoCompileEnabled === 'boolean' ? { autoCompileEnabled: args.autoCompileEnabled } : {}),
     ...(Array.isArray(args.defaultOutputFormats) ? { defaultOutputFormats: args.defaultOutputFormats as Array<'report' | 'slides' | 'summary'> } : {}),
   }),
   workspace_list: async () => listWorkspaceRecords(),
+  workspace_update: async (args = {}) => updateWorkspaceSettings({
+    workspaceId: args.workspaceId as string,
+    autoCompileEnabled: args.autoCompileEnabled as boolean,
+  }),
   workspace_bind: async (args = {}) => bindWorkspaceSources({
     workspaceId: args.workspaceId as string,
     sourceIds: args.sourceIds as string[],
@@ -406,6 +518,9 @@ const toolHandlers: Record<string, ToolHandler> = {
     ...(Array.isArray(args.sourceIds) ? { sourceIds: args.sourceIds as string[] } : {}),
   }),
   workspace_compile: async (args = {}) => compileWorkspaceArtifacts(args.workspaceId as string),
+  workspace_queue_run: async (args = {}) => runQueuedWorkspaceCompiles({
+    ...(typeof args.maxJobs === 'number' ? { maxJobs: args.maxJobs } : {}),
+  }),
   workspace_status: async (args = {}) => getWorkspaceStatus(args.workspaceId as string),
   workspace_search: async (args = {}) => searchWorkspaceCatalog(
     args.workspaceId as string,
@@ -419,6 +534,25 @@ const toolHandlers: Record<string, ToolHandler> = {
       ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
     },
   ),
+  workspace_ingest_add: async (args = {}) => ingestWorkspaceRawInput({
+    workspaceId: args.workspaceId as string,
+    kind: args.kind as string,
+    sourcePath: args.path as string,
+    ...(typeof args.label === 'string' ? { label: args.label } : {}),
+  }),
+  workspace_ingest_list: async (args = {}) => listWorkspaceRawInputsRecord(args.workspaceId as string),
+  workspace_ingest_show: async (args = {}) => showWorkspaceRawInput(args.workspaceId as string, args.rawInputId as string),
+  workspace_ingest_search: async (args = {}) => searchWorkspaceRawInputCatalog({
+    workspaceId: args.workspaceId as string,
+    query: args.query as string,
+    ...(Array.isArray(args.kinds) ? { kinds: args.kinds as string[] } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+  }),
+  workspace_ingest_remove: async (args = {}) => removeWorkspaceRawInput({
+    workspaceId: args.workspaceId as string,
+    rawInputId: args.rawInputId as string,
+  }),
   workspace_artifact_list: async (args = {}) => listWorkspaceArtifacts(args.workspaceId as string),
   workspace_artifact_show: async (args = {}) => showWorkspaceArtifact(args.workspaceId as string, args.artifactPath as string),
   workspace_lint: async (args = {}) => lintWorkspaceArtifacts(args.workspaceId as string),
@@ -427,6 +561,17 @@ const toolHandlers: Record<string, ToolHandler> = {
     format: args.format as 'report' | 'slides' | 'summary',
     ...(typeof args.name === 'string' ? { name: args.name } : {}),
     ...(typeof args.prompt === 'string' ? { prompt: args.prompt } : {}),
+  }),
+  workspace_answer: async (args = {}) => answerWorkspace({
+    workspaceId: args.workspaceId as string,
+    question: args.question as string,
+    format: args.format as string,
+    ...(typeof args.name === 'string' ? { name: args.name } : {}),
+  }),
+  workspace_sync_obsidian: async (args = {}) => syncWorkspaceToObsidianVault({
+    workspaceId: args.workspaceId as string,
+    vaultPath: args.vaultPath as string,
+    ...(typeof args.exportSubdir === 'string' ? { exportSubdir: args.exportSubdir } : {}),
   }),
   search: async (args = {}) => searchCatalog(args.query as string, {
     source: (args.sourceIds as string[] | undefined) ?? [],
@@ -725,7 +870,23 @@ registerAiocsTool(
       workspaceId: z.string(),
       label: z.string(),
       purpose: z.string().optional(),
+      autoCompileEnabled: z.boolean().optional(),
       defaultOutputFormats: z.array(z.enum(['report', 'slides', 'summary'])).optional(),
+    }),
+    outputSchema: z.object({
+      workspace: workspaceSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_update',
+  {
+    title: 'Workspace update',
+    description: 'Update workspace settings such as automatic recompilation.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      autoCompileEnabled: z.boolean(),
     }),
     outputSchema: z.object({
       workspace: workspaceSchema,
@@ -789,6 +950,7 @@ registerAiocsTool(
       skipped: z.boolean(),
       sourceFingerprint: z.string(),
       changedSourceIds: z.array(z.string()),
+      changedRawInputIds: z.array(z.string()),
       updatedArtifactPaths: z.array(z.string()),
       artifactCount: z.number().int().nonnegative(),
       compileRunId: z.string().nullable(),
@@ -808,6 +970,7 @@ registerAiocsTool(
       workspace: workspaceSchema,
       bindings: z.array(workspaceBindingSchema),
       artifacts: z.array(workspaceArtifactSchema),
+      compileJob: workspaceCompileJobSchema.nullable(),
       compileRuns: z.array(z.object({
         runId: z.string(),
         workspaceId: z.string(),
@@ -817,6 +980,41 @@ registerAiocsTool(
         errorMessage: z.string().nullable(),
         startedAt: z.string(),
         finishedAt: z.string(),
+      })),
+      rawInputs: z.array(workspaceRawInputSchema),
+      syncTargets: z.array(workspaceSyncTargetSchema),
+      questionRuns: z.array(workspaceQuestionRunSchema),
+      links: z.array(workspaceArtifactLinkSchema),
+      graph: z.object({
+        linkCount: z.number().int().nonnegative(),
+        brokenLinkCount: z.number().int().nonnegative(),
+        orphanArtifactCount: z.number().int().nonnegative(),
+      }),
+      lintSummary: workspaceLintSchema.shape.summary,
+      health: workspaceHealthSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_queue_run',
+  {
+    title: 'Workspace queue run',
+    description: 'Process queued workspace compile jobs.',
+    inputSchema: z.object({
+      maxJobs: z.number().int().positive().optional(),
+    }),
+    outputSchema: z.object({
+      processedJobs: z.number().int().nonnegative(),
+      succeededJobs: z.array(z.object({
+        workspaceId: z.string(),
+        sourceFingerprint: z.string(),
+        changedSourceIds: z.array(z.string()),
+        changedRawInputIds: z.array(z.string()),
+      })),
+      failedJobs: z.array(z.object({
+        workspaceId: z.string(),
+        errorMessage: z.string(),
       })),
     }),
   },
@@ -853,6 +1051,105 @@ registerAiocsTool(
 );
 
 registerAiocsTool(
+  'workspace_ingest_add',
+  {
+    title: 'Workspace ingest add',
+    description: 'Ingest a local markdown directory, PDF, or image into a research workspace as raw evidence.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      kind: z.enum(['markdown-dir', 'pdf', 'image']),
+      path: z.string(),
+      label: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      rawInput: workspaceRawInputSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_ingest_list',
+  {
+    title: 'Workspace ingest list',
+    description: 'List raw inputs ingested into a workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      rawInputs: z.array(workspaceRawInputSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_ingest_show',
+  {
+    title: 'Workspace ingest show',
+    description: 'Show one raw input together with its searchable chunks.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      rawInputId: z.string(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      rawInput: workspaceRawInputSchema,
+      chunks: z.array(z.object({
+        id: z.number().int().nonnegative(),
+        workspace_id: z.string(),
+        raw_input_id: z.string(),
+        section_title: z.string(),
+        markdown: z.string(),
+        file_path: z.string().nullable(),
+        score: z.number(),
+      })),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_ingest_search',
+  {
+    title: 'Workspace ingest search',
+    description: 'Search workspace-scoped raw input chunks directly.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      query: z.string(),
+      kinds: z.array(z.enum(['markdown-dir', 'pdf', 'image'])).optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      query: z.string(),
+      total: z.number().int().nonnegative(),
+      limit: z.number().int().positive(),
+      offset: z.number().int().nonnegative(),
+      hasMore: z.boolean(),
+      results: z.array(workspaceRawInputSearchResultSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_ingest_remove',
+  {
+    title: 'Workspace ingest remove',
+    description: 'Remove one raw input and its derived artifacts from a workspace.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      rawInputId: z.string(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      rawInputId: z.string(),
+      deleted: z.boolean(),
+    }),
+  },
+);
+
+registerAiocsTool(
   'workspace_artifact_list',
   {
     title: 'Workspace artifact list',
@@ -881,6 +1178,7 @@ registerAiocsTool(
       artifact: workspaceArtifactSchema,
       content: z.string(),
       provenance: z.array(workspaceArtifactProvenanceSchema),
+      rawInputProvenance: z.array(workspaceArtifactRawInputProvenanceSchema),
     }),
   },
 );
@@ -913,6 +1211,46 @@ registerAiocsTool(
       format: z.enum(['report', 'slides', 'summary']),
       path: z.string(),
       artifactCount: z.number().int().nonnegative(),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_answer',
+  {
+    title: 'Workspace answer',
+    description: 'Answer a question against a compiled workspace and save the result as a derived artifact.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      question: z.string(),
+      format: z.enum(['report', 'slides', 'summary', 'note']),
+      name: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      format: z.enum(['report', 'slides', 'summary', 'note']),
+      path: z.string(),
+      artifactCount: z.number().int().nonnegative(),
+      questionRun: workspaceQuestionRunSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'workspace_sync_obsidian',
+  {
+    title: 'Workspace sync Obsidian',
+    description: 'Sync a workspace tree into an Obsidian vault target.',
+    inputSchema: z.object({
+      workspaceId: z.string(),
+      vaultPath: z.string(),
+      exportSubdir: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      workspaceId: z.string(),
+      vaultPath: z.string(),
+      targetPath: z.string(),
+      exportSubdir: z.string(),
     }),
   },
 );
