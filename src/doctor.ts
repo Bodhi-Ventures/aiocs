@@ -480,7 +480,7 @@ async function checkDocker(): Promise<DoctorCheck> {
       return {
         id: 'docker',
         status: 'warn',
-        summary: 'Docker CLI is not installed; Docker-based daemon deployment is unavailable on this machine.',
+        summary: 'Docker CLI is not installed; Docker-based daemon deployment is unavailable in this environment.',
       };
     }
 

@@ -22,7 +22,7 @@ Make `aiocs` publishable as the public scoped package `@bodhi-ventures/aiocs` an
 - The release workflow is `workflow_dispatch`-driven and currently edits `package.json`, creates commits, tags, and configures a synthetic git author.
 - CI validates build/test/package/docker, but the release workflow still reflects the older mutable-release model.
 - README install instructions still point to `npm install --global aiocs`.
-- The approved release design lives in `docs/superpowers/specs/2026-03-29-tag-driven-release-pipeline-design.md`.
+- The approved release design lives in `plans/completed/2026-03-29-tag-driven-release-pipeline-design.md`.
 
 ## Constraints
 

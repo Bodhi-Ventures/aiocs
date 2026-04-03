@@ -13,12 +13,12 @@
 ### Task 1: Define Durable Interfaces
 
 **Files:**
-- Create: `docs/2026-03-26-agent-json-and-daemon-design.md`
+- Create: `plans/completed/2026-03-26-agent-json-and-daemon-design.md`
 - Modify: `plans/active/2026-03-26-agent-json-and-daemon.md`
 
 - [ ] **Step 1: Confirm the approved design is written**
 
-Check that `docs/2026-03-26-agent-json-and-daemon-design.md` exists and captures the JSON envelope, daemon behavior, and Docker contract.
+Check that `plans/completed/2026-03-26-agent-json-and-daemon-design.md` exists and captures the JSON envelope, daemon behavior, and Docker contract.
 
 - [ ] **Step 2: Keep this plan aligned with implementation**
 

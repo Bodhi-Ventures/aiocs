@@ -111,7 +111,7 @@ GitHub Actions publishes `@bodhi-ventures/aiocs` publicly to npm and creates the
 
 For Codex-first setup, automatic-use guidance, MCP recommendations, and agent definitions, see [docs/codex-integration.md](./docs/codex-integration.md).
 
-Canonical global setup:
+Canonical Codex setup:
 
 - register `aiocs-mcp` in `~/.codex/config.toml`
 - link `skills/aiocs` into `~/.codex/skills/aiocs`
@@ -450,7 +450,7 @@ The repo ships two GitHub Actions workflows:
 - [ci.yml](./.github/workflows/ci.yml): validation for lint, tests, build, pack, and Docker smoke coverage
 - [release.yml](./.github/workflows/release.yml): tag-driven stable release flow that validates the tagged package state, publishes to npm, and creates a GitHub release
 
-The release workflow is triggered only by pushed stable tags matching `vX.Y.Z` and expects `NPM_TOKEN` in repository secrets. The release job is retryable: if `@bodhi-ventures/aiocs@X.Y.Z` already exists on npm or the GitHub release already exists for `vX.Y.Z`, the workflow skips the completed publication step and finishes the remaining one.
+The release workflow is triggered only by pushed stable tags matching `vX.Y.Z` and expects an npm publish token in GitHub repository secrets. The release job is retryable: if `@bodhi-ventures/aiocs@X.Y.Z` already exists on npm or the GitHub release already exists for `vX.Y.Z`, the workflow skips the completed publication step and finishes the remaining one.
 
 Successful MCP results use an envelope:
 

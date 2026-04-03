@@ -51,7 +51,7 @@ command = "aiocs-mcp"
 
 Codex does not automatically invoke a custom subagent just because one exists. The primary automatic-use mechanism is the `aiocs` MCP server plus the `aiocs` skill itself.
 
-To make Codex discover the read/search path automatically on this machine, expose the skills in the global Codex skill directory:
+To make Codex discover the read/search path automatically, expose the skills in the global Codex skill directory:
 
 ```bash
 AIOCS_REPO=/absolute/path/to/your/aiocs/checkout
@@ -64,21 +64,17 @@ Once those symlinks exist, Codex can load `aiocs` for normal local-doc lookup an
 
 ## Subagent options
 
-There are two supported subagent patterns:
+The repo ships a ready-to-copy specialist definition at
+[`agents/aiocs-docs-specialist.toml`](../agents/aiocs-docs-specialist.toml).
 
-- Repo-managed agent definition:
-  [`agents/aiocs-docs-specialist.toml`](../agents/aiocs-docs-specialist.toml)
-- Install-ready global agent definition:
-  `ai-skills/agents/aiocs-docs-specialist.toml` from your local `ai-skills` checkout
+It points at the globally installed `aiocs-mcp` binary so Codex uses the published package by default.
 
-The repo-managed agent definition and the install-ready global agent both point at the globally installed `aiocs-mcp` binary so Codex uses the published package by default.
-
-To expose the install-ready global agent to Codex on this machine:
+To expose that agent to Codex:
 
 ```bash
-AI_SKILLS_REPO=/absolute/path/to/your/ai-skills/checkout
+AIOCS_REPO=/absolute/path/to/your/aiocs/checkout
 mkdir -p ~/.codex/agents
-ln -sfn "$AI_SKILLS_REPO/agents/aiocs-docs-specialist.toml" ~/.codex/agents/aiocs-docs-specialist.toml
+ln -sfn "$AIOCS_REPO/agents/aiocs-docs-specialist.toml" ~/.codex/agents/aiocs-docs-specialist.toml
 ```
 
 ## Suggested Codex flows

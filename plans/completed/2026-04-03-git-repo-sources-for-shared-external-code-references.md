@@ -74,4 +74,4 @@ Add first-class `git` repository sources to `aiocs` so external codebases can be
 
 ## Next Handoff Step
 
-Implement the `git` source kind in `aiocs` using the design in `docs/superpowers/specs/2026-04-03-git-repo-sources-design.md`, then validate it end to end with the bundled `nktkas/hyperliquid` source.
+Implement the `git` source kind in `aiocs` using the design in `plans/completed/2026-04-03-git-repo-sources-design.md`, then validate it end to end with the bundled `nktkas/hyperliquid` source.
