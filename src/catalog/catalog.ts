@@ -146,6 +146,15 @@ type WorkspaceArtifactProvenanceRow = {
   chunk_ids_json: string;
 };
 
+type WorkspaceArtifactChunkSearchRow = {
+  artifactPath: string;
+  kind: WorkspaceArtifactKind;
+  sectionTitle: string;
+  markdown: string;
+  stale: boolean;
+  score: number;
+};
+
 type SearchScope = {
   limit: number;
   offset: number;
@@ -1580,6 +1589,149 @@ export function openCatalog(options: OpenCatalogOptions) {
       `).all(workspaceId) as WorkspaceArtifactRow[];
 
       return rows.map(mapWorkspaceArtifactRow);
+    },
+
+    setWorkspaceArtifactsStale(input: {
+      workspaceId: string;
+      artifactPaths: string[];
+      stale: boolean;
+    }): { updatedCount: number } {
+      assertWorkspaceExists(input.workspaceId);
+      const uniquePaths = [...new Set(input.artifactPaths)];
+      if (uniquePaths.length === 0) {
+        return { updatedCount: 0 };
+      }
+
+      const timestamp = nowIso();
+      const result = db.prepare(`
+        UPDATE workspace_artifacts
+        SET stale = ?, updated_at = ?
+        WHERE workspace_id = ?
+          AND path IN (${uniquePaths.map(() => '?').join(',')})
+      `).run(
+        input.stale ? 1 : 0,
+        timestamp,
+        input.workspaceId,
+        ...uniquePaths,
+      );
+
+      return {
+        updatedCount: result.changes,
+      };
+    },
+
+    deleteWorkspaceArtifacts(input: {
+      workspaceId: string;
+      artifactPaths: string[];
+    }): { deletedCount: number } {
+      assertWorkspaceExists(input.workspaceId);
+      const uniquePaths = [...new Set(input.artifactPaths)];
+      if (uniquePaths.length === 0) {
+        return { deletedCount: 0 };
+      }
+
+      const result = db.prepare(`
+        DELETE FROM workspace_artifacts
+        WHERE workspace_id = ?
+          AND path IN (${uniquePaths.map(() => '?').join(',')})
+      `).run(
+        input.workspaceId,
+        ...uniquePaths,
+      );
+
+      return {
+        deletedCount: result.changes,
+      };
+    },
+
+    searchWorkspaceArtifacts(input: {
+      workspaceId: string;
+      query: string;
+      limit?: number;
+      offset?: number;
+      kinds?: WorkspaceArtifactKind[];
+    }): {
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+      results: WorkspaceArtifactChunkSearchRow[];
+    } {
+      assertWorkspaceExists(input.workspaceId);
+      const normalized = normalizeQuery(input.query);
+      const limit = assertPaginationValue(input.limit, 'limit', 10);
+      const offset = assertPaginationValue(input.offset, 'offset', 0);
+      const normalizedKinds = input.kinds && input.kinds.length > 0 ? [...new Set(input.kinds)] : null;
+
+      if (!normalized) {
+        return {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+          results: [],
+        };
+      }
+
+      const kindSql = normalizedKinds
+        ? `AND wa.kind IN (${normalizedKinds.map(() => '?').join(',')})`
+        : '';
+      const args = [normalized, input.workspaceId, ...(normalizedKinds ?? [])];
+
+      const totalRow = db.prepare(`
+        SELECT COUNT(*) AS total
+        FROM workspace_artifact_chunks_fts
+        JOIN workspace_artifact_chunks wac ON wac.rowid = workspace_artifact_chunks_fts.rowid
+        JOIN workspace_artifacts wa
+          ON wa.workspace_id = wac.workspace_id
+         AND wa.path = wac.artifact_path
+        WHERE workspace_artifact_chunks_fts MATCH ?
+          AND wac.workspace_id = ?
+          ${kindSql}
+      `).get(...args) as { total: number };
+
+      const rows = db.prepare(`
+        SELECT
+          wac.artifact_path,
+          wa.kind,
+          wac.section_title,
+          wac.markdown,
+          wa.stale,
+          bm25(workspace_artifact_chunks_fts) AS rank
+        FROM workspace_artifact_chunks_fts
+        JOIN workspace_artifact_chunks wac ON wac.rowid = workspace_artifact_chunks_fts.rowid
+        JOIN workspace_artifacts wa
+          ON wa.workspace_id = wac.workspace_id
+         AND wa.path = wac.artifact_path
+        WHERE workspace_artifact_chunks_fts MATCH ?
+          AND wac.workspace_id = ?
+          ${kindSql}
+        ORDER BY bm25(workspace_artifact_chunks_fts), wac.rowid
+        LIMIT ?
+        OFFSET ?
+      `).all(...args, limit, offset) as Array<{
+        artifact_path: string;
+        kind: WorkspaceArtifactKind;
+        section_title: string;
+        markdown: string;
+        stale: number;
+        rank: number;
+      }>;
+
+      return {
+        total: totalRow.total,
+        limit,
+        offset,
+        hasMore: offset + rows.length < totalRow.total,
+        results: rows.map((row) => ({
+          artifactPath: row.artifact_path,
+          kind: row.kind,
+          sectionTitle: row.section_title,
+          markdown: row.markdown,
+          stale: row.stale === 1,
+          score: typeof row.rank === 'number' ? Math.abs(row.rank) : 0,
+        })),
+      };
     },
 
     getWorkspaceArtifact(workspaceId: string, artifactPath: string) {

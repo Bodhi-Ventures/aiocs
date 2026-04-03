@@ -22,6 +22,8 @@ import {
 import {
   backfillEmbeddings,
   clearEmbeddings,
+  compileWorkspaceArtifacts,
+  createWorkspace,
   diffSnapshotsForSource,
   getEmbeddingStatus,
   exportCatalogBackup,
@@ -29,19 +31,29 @@ import {
   fetchSources,
   getDoctorReport,
   initManagedSources,
+  generateWorkspaceArtifactOutput,
+  getWorkspaceStatus,
   linkProjectSources,
+  listWorkspaceArtifacts,
+  listWorkspaceRecords,
   listSnapshotsForSource,
   listSources,
+  lintWorkspaceArtifacts,
   runSourceCanaries,
   runEmbeddingWorker,
   searchCatalog,
+  searchWorkspaceCatalog,
   showChunk,
+  showWorkspaceArtifact,
   type SearchOptions,
+  type WorkspaceSearchOptions,
   unlinkProjectSources,
+  unbindWorkspaceSources,
   upsertSourceFromSpecFile,
   verifyCoverage,
   refreshDueSources,
   getManagedSourceSpecDirectories,
+  bindWorkspaceSources,
 } from './services.js';
 
 type CommandResult<TData> = {
@@ -75,6 +87,51 @@ function renderSearchResult(result: {
     `Page: ${result.pageTitle}`,
     `Section: ${result.sectionTitle}`,
     `URL: ${result.pageUrl}`,
+    '',
+    result.markdown,
+    '',
+  ].join('\n');
+}
+
+function renderWorkspaceSearchResult(
+  result:
+    | {
+        kind: 'source';
+        scope: 'source';
+        chunkId: number;
+        sourceId: string;
+        snapshotId: string;
+        pageUrl: string;
+        pageTitle: string;
+        sectionTitle: string;
+        markdown: string;
+        pageKind: 'document' | 'file';
+        filePath: string | null;
+        language: string | null;
+        score: number;
+        signals: Array<'lexical' | 'vector'>;
+      }
+    | {
+        kind: 'derived';
+        scope: 'derived';
+        artifactPath: string;
+        artifactKind: string;
+        sectionTitle: string;
+        markdown: string;
+        stale: boolean;
+        score: number;
+      },
+): string {
+  if (result.kind === 'source') {
+    return renderSearchResult(result);
+  }
+
+  return [
+    `Artifact: ${result.artifactPath}`,
+    `Kind: ${result.artifactKind}`,
+    `Section: ${result.sectionTitle}`,
+    `Stale: ${String(result.stale)}`,
+    `Score: ${result.score.toFixed(4)}`,
     '',
     result.markdown,
     '',
@@ -505,6 +562,247 @@ project
       return {
         data: result,
         human: `Unlinked ${result.projectPath}`,
+      };
+    });
+  });
+
+const workspace = program.command('workspace');
+
+workspace
+  .command('create')
+  .argument('<workspace-id>')
+  .requiredOption('--label <label>', 'workspace label')
+  .option('--purpose <purpose>', 'workspace purpose/description')
+  .option('--output <format>', 'default output format', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .action(async (
+    workspaceId: string,
+    options: { label: string; purpose?: string; output?: string[] },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.create', async () => {
+      const result = await createWorkspace({
+        workspaceId,
+        label: options.label,
+        ...(options.purpose ? { purpose: options.purpose } : {}),
+        ...(options.output && options.output.length > 0 ? { defaultOutputFormats: options.output as Array<'report' | 'slides' | 'summary'> } : {}),
+      });
+      return {
+        data: result,
+        human: `Created workspace ${result.workspace.id}`,
+      };
+    });
+  });
+
+workspace
+  .command('list')
+  .action(async (_options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.list', async () => {
+      const result = await listWorkspaceRecords();
+      return {
+        data: result,
+        human: result.workspaces.length === 0
+          ? 'No workspaces registered.'
+          : result.workspaces.map((item) => [
+            item.id,
+            item.label,
+            `bindings=${item.bindingCount}`,
+            `artifacts=${item.artifactCount}`,
+            item.lastCompileStatus ? `last=${item.lastCompileStatus}` : 'never compiled',
+          ].join(' | ')),
+      };
+    });
+  });
+
+workspace
+  .command('bind')
+  .argument('<workspace-id>')
+  .argument('<source-ids...>')
+  .action(async (workspaceId: string, sourceIds: string[], _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.bind', async () => {
+      const result = await bindWorkspaceSources({ workspaceId, sourceIds });
+      return {
+        data: result,
+        human: `Bound ${workspaceId} -> ${sourceIds.join(', ')}`,
+      };
+    });
+  });
+
+workspace
+  .command('unbind')
+  .argument('<workspace-id>')
+  .argument('[source-ids...]')
+  .action(async (workspaceId: string, sourceIds: string[], _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.unbind', async () => {
+      const result = await unbindWorkspaceSources({
+        workspaceId,
+        ...(sourceIds.length > 0 ? { sourceIds } : {}),
+      });
+      return {
+        data: result,
+        human: sourceIds.length > 0
+          ? `Unbound ${workspaceId} -> ${sourceIds.join(', ')}`
+          : `Unbound all sources from ${workspaceId}`,
+      };
+    });
+  });
+
+workspace
+  .command('compile')
+  .argument('<workspace-id>')
+  .action(async (workspaceId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.compile', async () => {
+      const result = await compileWorkspaceArtifacts(workspaceId);
+      return {
+        data: result,
+        human: result.skipped
+          ? `Workspace ${workspaceId} is already up to date.`
+          : [
+              `Compiled ${workspaceId}`,
+              `Changed sources: ${result.changedSourceIds.join(', ') || '(none)'}`,
+              ...result.updatedArtifactPaths.map((path) => `- ${path}`),
+            ],
+      };
+    });
+  });
+
+workspace
+  .command('status')
+  .argument('<workspace-id>')
+  .action(async (workspaceId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.status', async () => {
+      const result = await getWorkspaceStatus(workspaceId);
+      return {
+        data: result,
+        human: [
+          `${result.workspace.id} | ${result.workspace.label}`,
+          `Bindings=${result.bindings.length} | Artifacts=${result.artifacts.length} | Runs=${result.compileRuns.length}`,
+        ],
+      };
+    });
+  });
+
+workspace
+  .command('search')
+  .argument('<workspace-id>')
+  .argument('<query>')
+  .option('--scope <scope>', 'source, derived, or mixed')
+  .option('--mode <mode>', 'search mode: auto, lexical, hybrid, semantic')
+  .option('--path <glob>', 'restrict source-side search to file paths matching a glob', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--language <name>', 'restrict source-side search to a language', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--limit <count>', 'maximum number of results to return')
+  .option('--offset <count>', 'number of results to skip before returning matches')
+  .action(async (
+    workspaceId: string,
+    query: string,
+    options: WorkspaceSearchOptions & { limit?: string; offset?: string; mode?: string; path?: string[]; language?: string[]; scope?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.search', async () => {
+      const limit = parsePositiveIntegerOption(options.limit, 'limit');
+      const offset = parsePositiveIntegerOption(options.offset, 'offset');
+      const mode = parseSearchModeOption(options.mode);
+      const result = await searchWorkspaceCatalog(workspaceId, query, {
+        ...(options.scope ? { scope: options.scope as 'source' | 'derived' | 'mixed' } : {}),
+        ...(mode ? { mode } : {}),
+        ...(options.path && options.path.length > 0 ? { path: options.path } : {}),
+        ...(options.language && options.language.length > 0 ? { language: options.language } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+        ...(typeof offset === 'number' ? { offset } : {}),
+      });
+      return {
+        data: result,
+        human: result.results.length === 0
+          ? `No workspace results for "${query}" (${result.scope})`
+          : [
+              `Showing ${result.offset + 1}-${result.offset + result.results.length} of ${result.total} workspace result(s)`,
+              ...result.results.map((entry) => renderWorkspaceSearchResult(entry)),
+            ],
+      };
+    });
+  });
+
+const workspaceArtifact = workspace.command('artifact');
+workspaceArtifact
+  .command('list')
+  .argument('<workspace-id>')
+  .action(async (workspaceId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.artifact.list', async () => {
+      const result = await listWorkspaceArtifacts(workspaceId);
+      return {
+        data: result,
+        human: result.artifacts.length === 0
+          ? `No artifacts for ${workspaceId}`
+          : result.artifacts.map((artifact) => [
+              artifact.path,
+              artifact.kind,
+              artifact.stale ? 'stale' : 'fresh',
+              `chunks=${artifact.chunkCount}`,
+            ].join(' | ')),
+      };
+    });
+  });
+
+workspaceArtifact
+  .command('show')
+  .argument('<workspace-id>')
+  .argument('<artifact-path>')
+  .action(async (workspaceId: string, artifactPath: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.artifact.show', async () => {
+      const result = await showWorkspaceArtifact(workspaceId, artifactPath);
+      return {
+        data: result,
+        human: result.content,
+      };
+    });
+  });
+
+workspace
+  .command('lint')
+  .argument('<workspace-id>')
+  .action(async (workspaceId: string, _options: unknown, command: Command) => {
+    await executeCommand(command, 'workspace.lint', async () => {
+      const result = await lintWorkspaceArtifacts(workspaceId);
+      return {
+        data: result,
+        human: [
+          `${workspaceId} lint status=${result.summary.status}`,
+          ...result.findings.map((finding) => `${finding.kind} | ${finding.artifactPath ?? finding.sourceId ?? '(workspace)'} | ${finding.summary}`),
+        ],
+      };
+    });
+  });
+
+workspace
+  .command('output')
+  .argument('<workspace-id>')
+  .argument('<format>')
+  .option('--name <name>', 'output file slug')
+  .option('--prompt <prompt>', 'extra output instructions')
+  .action(async (
+    workspaceId: string,
+    format: string,
+    options: { name?: string; prompt?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'workspace.output', async () => {
+      const result = await generateWorkspaceArtifactOutput({
+        workspaceId,
+        format: format as 'report' | 'slides' | 'summary',
+        ...(options.name ? { name: options.name } : {}),
+        ...(options.prompt ? { prompt: options.prompt } : {}),
+      });
+      return {
+        data: result,
+        human: `Generated ${result.format} at ${result.path}`,
       };
     });
   });

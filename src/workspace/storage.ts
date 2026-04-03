@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, normalize, relative, resolve } from 'node:path';
 
 import {
@@ -121,6 +121,19 @@ export async function readWorkspaceArtifact(input: {
   };
 }
 
+export async function deleteWorkspaceArtifact(input: {
+  dataDir: string;
+  workspaceId: string;
+  path: string;
+}): Promise<void> {
+  const absolutePath = resolveWorkspaceArtifactAbsolutePath(
+    input.dataDir,
+    input.workspaceId,
+    input.path,
+  );
+  await rm(absolutePath, { force: true });
+}
+
 export async function writeWorkspaceManifest(input: {
   dataDir: string;
   workspaceId: string;
@@ -138,4 +151,14 @@ export async function writeWorkspaceManifest(input: {
     fileName: normalizedFileName,
     absolutePath,
   };
+}
+
+export async function deleteWorkspaceManifest(input: {
+  dataDir: string;
+  workspaceId: string;
+  fileName: string;
+}): Promise<void> {
+  const layout = ensureWorkspaceDirectories(input);
+  const normalizedFileName = validateWorkspaceRelativePath(input.fileName);
+  await rm(join(layout.manifestsDir, normalizedFileName), { force: true });
 }

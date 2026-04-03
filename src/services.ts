@@ -16,6 +16,13 @@ import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config.js';
 import { uniqueResolvedPaths } from './spec/source-spec-files.js';
 import { loadSourceSpec } from './spec/source-spec.js';
+import { compileWorkspace as compileWorkspaceRun } from './workspace/compile.js';
+import { generateWorkspaceOutput as generateWorkspaceOutputRun } from './workspace/output.js';
+import { lintWorkspace as lintWorkspaceRun } from './workspace/lint.js';
+import { deleteWorkspaceArtifact, deleteWorkspaceManifest, readWorkspaceArtifact } from './workspace/storage.js';
+import { resolveWorkspaceCompilerProfile } from './workspace/compiler-profile.js';
+import { getWorkspaceIndexPath } from './workspace/artifacts.js';
+import type { WorkspaceOutputFormat } from './workspace/types.js';
 
 export type SearchOptions = {
   source: string[];
@@ -29,10 +36,24 @@ export type SearchOptions = {
   mode?: SearchMode;
 };
 
+export type WorkspaceSearchScope = 'source' | 'derived' | 'mixed';
+
+export type WorkspaceSearchOptions = {
+  scope?: WorkspaceSearchScope;
+  limit?: number;
+  offset?: number;
+  path?: string[];
+  language?: string[];
+  mode?: SearchMode;
+};
+
 type CatalogContext = {
   dataDir: string;
   catalog: ReturnType<typeof openCatalog>;
 };
+
+const workspaceSearchScopes = new Set<WorkspaceSearchScope>(['source', 'derived', 'mixed']);
+const workspaceOutputFormats = new Set<WorkspaceOutputFormat>(['report', 'slides', 'summary']);
 
 function createCatalog(): CatalogContext {
   const dataDir = getAiocsDataDir();
@@ -46,6 +67,40 @@ function createCatalog(): CatalogContext {
 function withCatalog<T>(run: (ctx: CatalogContext) => Promise<T> | T): Promise<T> {
   const ctx = createCatalog();
   return Promise.resolve(run(ctx)).finally(() => ctx.catalog.close());
+}
+
+function assertWorkspaceSearchScope(value: string | undefined): WorkspaceSearchScope | undefined {
+  if (typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (workspaceSearchScopes.has(value as WorkspaceSearchScope)) {
+    return value as WorkspaceSearchScope;
+  }
+
+  throw new AiocsError(
+    AIOCS_ERROR_CODES.invalidArgument,
+    'workspace scope must be one of: source, derived, mixed',
+  );
+}
+
+function assertWorkspaceOutputFormat(value: string): WorkspaceOutputFormat {
+  if (workspaceOutputFormats.has(value as WorkspaceOutputFormat)) {
+    return value as WorkspaceOutputFormat;
+  }
+
+  throw new AiocsError(
+    AIOCS_ERROR_CODES.invalidArgument,
+    'workspace output format must be one of: report, slides, summary',
+  );
+}
+
+function assertWorkspaceOutputFormats(values: string[] | undefined): WorkspaceOutputFormat[] | undefined {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+
+  return values.map((value) => assertWorkspaceOutputFormat(value));
 }
 
 export async function upsertSourceFromSpecFile(specFile: string): Promise<{
@@ -286,6 +341,384 @@ export async function unlinkProjectSources(projectPath: string, sourceIds: strin
     projectPath: resolvedProjectPath,
     sourceIds,
   };
+}
+
+export async function createWorkspace(input: {
+  workspaceId: string;
+  label: string;
+  purpose?: string;
+  defaultOutputFormats?: string[];
+}): Promise<{
+  workspace: ReturnType<ReturnType<typeof openCatalog>['createWorkspace']>;
+}> {
+  const defaultOutputFormats = assertWorkspaceOutputFormats(input.defaultOutputFormats);
+  const workspace = await withCatalog(({ catalog }) => catalog.createWorkspace({
+    id: input.workspaceId,
+    label: input.label,
+    ...(input.purpose ? { purpose: input.purpose } : {}),
+    compilerProfile: resolveWorkspaceCompilerProfile(),
+    defaultOutputFormats: defaultOutputFormats ?? ['report', 'slides'],
+  }));
+
+  return { workspace };
+}
+
+export async function listWorkspaceRecords(): Promise<{
+  workspaces: ReturnType<ReturnType<typeof openCatalog>['listWorkspaces']>;
+}> {
+  const workspaces = await withCatalog(({ catalog }) => catalog.listWorkspaces());
+  return { workspaces };
+}
+
+export async function bindWorkspaceSources(input: {
+  workspaceId: string;
+  sourceIds: string[];
+}): Promise<{
+  workspaceId: string;
+  sourceIds: string[];
+}> {
+  await withCatalog(({ catalog }) => {
+    catalog.bindWorkspaceSources(input.workspaceId, input.sourceIds);
+  });
+
+  return {
+    workspaceId: input.workspaceId,
+    sourceIds: input.sourceIds,
+  };
+}
+
+export async function unbindWorkspaceSources(input: {
+  workspaceId: string;
+  sourceIds?: string[];
+}): Promise<{
+  workspaceId: string;
+  sourceIds: string[];
+}> {
+  await withCatalog(async ({ catalog, dataDir }) => {
+    const existingBindings = catalog.listWorkspaceSourceBindings(input.workspaceId).map((binding) => binding.sourceId);
+    const removedSourceIds = input.sourceIds && input.sourceIds.length > 0
+      ? [...new Set(input.sourceIds)]
+      : existingBindings;
+
+    catalog.unbindWorkspaceSources(input.workspaceId, input.sourceIds);
+
+    const artifactPathsToDelete = catalog.listWorkspaceArtifacts(input.workspaceId)
+      .filter((artifact) => {
+        if (artifact.path === getWorkspaceIndexPath()) {
+          return true;
+        }
+
+        const provenance = catalog.listWorkspaceArtifactProvenance(input.workspaceId, artifact.path);
+        return provenance.length === 0 || provenance.some((entry) => removedSourceIds.includes(entry.sourceId));
+      })
+      .map((artifact) => artifact.path);
+
+    catalog.deleteWorkspaceArtifacts({
+      workspaceId: input.workspaceId,
+      artifactPaths: artifactPathsToDelete,
+    });
+    await Promise.all(artifactPathsToDelete.map((path) => deleteWorkspaceArtifact({
+      dataDir,
+      workspaceId: input.workspaceId,
+      path,
+    })));
+    await deleteWorkspaceManifest({
+      dataDir,
+      workspaceId: input.workspaceId,
+      fileName: 'compile-state.json',
+    });
+  });
+
+  return {
+    workspaceId: input.workspaceId,
+    sourceIds: input.sourceIds ?? [],
+  };
+}
+
+function rrfMergeWorkspaceResults<
+  TSource extends { kind: 'source'; chunkId: number },
+  TDerived extends { kind: 'derived'; artifactPath: string; sectionTitle: string }
+>(
+  sourceResults: TSource[],
+  derivedResults: TDerived[],
+): Array<(TSource | TDerived) & { fusedScore: number }> {
+  const rrfK = 60;
+  const scored = new Map<string, { result: TSource | TDerived; fusedScore: number }>();
+
+  sourceResults.forEach((result, index) => {
+    const key = `source:${result.chunkId}`;
+    scored.set(key, {
+      result,
+      fusedScore: (scored.get(key)?.fusedScore ?? 0) + 1 / (rrfK + index + 1),
+    });
+  });
+  derivedResults.forEach((result, index) => {
+    const key = `derived:${result.artifactPath}:${result.sectionTitle}`;
+    scored.set(key, {
+      result,
+      fusedScore: (scored.get(key)?.fusedScore ?? 0) + 1 / (rrfK + index + 1),
+    });
+  });
+
+  return [...scored.values()]
+    .sort((left, right) => right.fusedScore - left.fusedScore)
+    .map((entry) => ({
+      ...entry.result,
+      fusedScore: entry.fusedScore,
+    }));
+}
+
+export async function getWorkspaceStatus(workspaceId: string): Promise<{
+  workspace: NonNullable<ReturnType<ReturnType<typeof openCatalog>['getWorkspace']>>;
+  bindings: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceSourceBindings']>;
+  artifacts: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifacts']>;
+  compileRuns: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceCompileRuns']>;
+}> {
+  return withCatalog(({ catalog }) => {
+    const workspace = catalog.getWorkspace(workspaceId);
+    if (!workspace) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceNotFound,
+        `Unknown workspace '${workspaceId}'`,
+      );
+    }
+
+    return {
+      workspace,
+      bindings: catalog.listWorkspaceSourceBindings(workspaceId),
+      artifacts: catalog.listWorkspaceArtifacts(workspaceId),
+      compileRuns: catalog.listWorkspaceCompileRuns(workspaceId),
+    };
+  });
+}
+
+export async function compileWorkspaceArtifacts(workspaceId: string): Promise<{
+  workspaceId: string;
+  skipped: boolean;
+  sourceFingerprint: string;
+  changedSourceIds: string[];
+  updatedArtifactPaths: string[];
+  artifactCount: number;
+  compileRunId: string | null;
+}> {
+  return withCatalog(({ catalog, dataDir }) => compileWorkspaceRun({
+    catalog,
+    dataDir,
+    workspaceId,
+  }));
+}
+
+export async function searchWorkspaceCatalog(
+  workspaceId: string,
+  query: string,
+  options: WorkspaceSearchOptions = {},
+): Promise<{
+  workspaceId: string;
+  query: string;
+  scope: WorkspaceSearchScope;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  modeRequested: SearchMode;
+  modeUsed: SearchMode | 'derived';
+  total: number;
+  results: Array<
+    | {
+        kind: 'source';
+        scope: 'source';
+        chunkId: number;
+        sourceId: string;
+        snapshotId: string;
+        pageUrl: string;
+        pageTitle: string;
+        sectionTitle: string;
+        markdown: string;
+        pageKind: 'document' | 'file';
+        filePath: string | null;
+        language: string | null;
+        score: number;
+        signals: Array<'lexical' | 'vector'>;
+      }
+    | {
+        kind: 'derived';
+        scope: 'derived';
+        artifactPath: string;
+        artifactKind: string;
+        sectionTitle: string;
+        markdown: string;
+        stale: boolean;
+        score: number;
+      }
+  >;
+}> {
+  const scope = assertWorkspaceSearchScope(options.scope) ?? 'mixed';
+  const limit = options.limit ?? 10;
+  const offset = options.offset ?? 0;
+
+  return withCatalog(async ({ catalog }) => {
+    const workspace = catalog.getWorkspace(workspaceId);
+    if (!workspace) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceNotFound,
+        `Unknown workspace '${workspaceId}'`,
+      );
+    }
+
+    const sourceIds = catalog.listWorkspaceSourceBindings(workspaceId).map((binding) => binding.sourceId);
+    const hybridConfig = getHybridRuntimeConfig();
+    const modeRequested = options.mode ?? hybridConfig.defaultSearchMode;
+
+    const sourceResult = scope === 'derived'
+      ? {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+          modeRequested,
+          modeUsed: 'lexical' as const,
+          results: [],
+        }
+      : await searchHybridCatalog({
+          catalog,
+          config: hybridConfig,
+          query,
+          mode: modeRequested,
+          searchInput: {
+            sourceIds,
+            all: false,
+            ...(options.path && options.path.length > 0 ? { pathPatterns: options.path } : {}),
+            ...(options.language && options.language.length > 0 ? { languages: options.language } : {}),
+            limit: Math.max(limit + offset, limit),
+            offset: 0,
+          },
+        });
+
+    const derivedResult = scope === 'source'
+      ? {
+          total: 0,
+          limit,
+          offset,
+          hasMore: false,
+          results: [],
+        }
+      : catalog.searchWorkspaceArtifacts({
+          workspaceId,
+          query,
+          limit: Math.max(limit + offset, limit),
+          offset: 0,
+        });
+
+    const sourceRows = sourceResult.results.map((result) => ({
+      ...result,
+      kind: 'source' as const,
+      scope: 'source' as const,
+    }));
+    const derivedRows = derivedResult.results.map((result) => ({
+      kind: 'derived' as const,
+      scope: 'derived' as const,
+      artifactPath: result.artifactPath,
+      artifactKind: result.kind,
+      sectionTitle: result.sectionTitle,
+      markdown: result.markdown,
+      stale: result.stale,
+      score: result.score,
+    }));
+
+    const merged = scope === 'mixed'
+      ? rrfMergeWorkspaceResults(sourceRows, derivedRows)
+      : scope === 'source'
+        ? sourceRows
+        : derivedRows;
+    const paged = merged.slice(offset, offset + limit);
+    const total = merged.length;
+
+    return {
+      workspaceId,
+      query,
+      scope,
+      limit,
+      offset,
+      hasMore: offset + paged.length < total,
+      modeRequested,
+      modeUsed: scope === 'derived' ? 'derived' : sourceResult.modeUsed,
+      total,
+      results: paged,
+    };
+  });
+}
+
+export async function listWorkspaceArtifacts(workspaceId: string): Promise<{
+  workspaceId: string;
+  artifacts: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifacts']>;
+}> {
+  return withCatalog(({ catalog }) => {
+    const workspace = catalog.getWorkspace(workspaceId);
+    if (!workspace) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceNotFound,
+        `Unknown workspace '${workspaceId}'`,
+      );
+    }
+
+    return {
+      workspaceId,
+      artifacts: catalog.listWorkspaceArtifacts(workspaceId),
+    };
+  });
+}
+
+export async function showWorkspaceArtifact(workspaceId: string, artifactPath: string): Promise<{
+  workspaceId: string;
+  artifact: NonNullable<ReturnType<ReturnType<typeof openCatalog>['getWorkspaceArtifact']>>;
+  content: string;
+  provenance: ReturnType<ReturnType<typeof openCatalog>['listWorkspaceArtifactProvenance']>;
+}> {
+  return withCatalog(async ({ catalog, dataDir }) => {
+    const artifact = catalog.getWorkspaceArtifact(workspaceId, artifactPath);
+    if (!artifact) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.workspaceArtifactNotFound,
+        `Workspace artifact '${artifactPath}' not found in '${workspaceId}'`,
+      );
+    }
+
+    const content = await readWorkspaceArtifact({
+      dataDir,
+      workspaceId,
+      path: artifactPath,
+    });
+
+    return {
+      workspaceId,
+      artifact,
+      content: content.content,
+      provenance: catalog.listWorkspaceArtifactProvenance(workspaceId, artifactPath),
+    };
+  });
+}
+
+export async function lintWorkspaceArtifacts(workspaceId: string) {
+  return withCatalog(({ catalog }) => lintWorkspaceRun({
+    catalog,
+    workspaceId,
+  }));
+}
+
+export async function generateWorkspaceArtifactOutput(input: {
+  workspaceId: string;
+  format: string;
+  name?: string;
+  prompt?: string;
+}) {
+  const format = assertWorkspaceOutputFormat(input.format);
+  return withCatalog(({ catalog, dataDir }) => generateWorkspaceOutputRun({
+    catalog,
+    dataDir,
+    workspaceId: input.workspaceId,
+    format,
+    ...(input.name ? { name: input.name } : {}),
+    ...(input.prompt ? { prompt: input.prompt } : {}),
+  }));
 }
 
 export async function searchCatalog(query: string, options: SearchOptions): Promise<{
