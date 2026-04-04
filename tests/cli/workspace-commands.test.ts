@@ -150,4 +150,81 @@ schedule:
       await docsServer.close();
     }
   }, 30_000);
+
+  it('supports dataset ingest add, list, show, and search', async () => {
+    const env = {
+      ...process.env,
+      AIOCS_DATA_DIR: join(root, 'data'),
+      AIOCS_CONFIG_DIR: join(root, 'config'),
+    };
+    const csvPath = join(root, 'fills.csv');
+    writeFileSync(csvPath, 'symbol,venue,volume\nBTC,hyperliquid,123\nETH,nado,45\n');
+
+    const create = await runCli(['--json', 'workspace', 'create', 'dataset-space', '--label', 'Dataset Space'], { cwd: root, env });
+    expect(create.exitCode).toBe(0);
+
+    const ingest = await runCli(['--json', 'workspace', 'ingest', 'add', 'dataset-space', 'csv', csvPath, '--label', 'Fills CSV'], { cwd: root, env });
+    expect(ingest.exitCode).toBe(0);
+    expect(parseJsonEnvelope(ingest.stdout)).toMatchObject({
+      ok: true,
+      command: 'workspace.ingest.add',
+      data: {
+        rawInput: expect.objectContaining({
+          kind: 'csv',
+          label: 'Fills CSV',
+        }),
+      },
+    });
+
+    const list = await runCli(['--json', 'workspace', 'ingest', 'list', 'dataset-space'], { cwd: root, env });
+    expect(list.exitCode).toBe(0);
+    expect(parseJsonEnvelope(list.stdout)).toMatchObject({
+      ok: true,
+      command: 'workspace.ingest.list',
+      data: {
+        rawInputs: [
+          expect.objectContaining({
+            kind: 'csv',
+            label: 'Fills CSV',
+          }),
+        ],
+      },
+    });
+
+    const listEnvelope = parseJsonEnvelope(list.stdout);
+    const rawInputId = (listEnvelope.data as { rawInputs: Array<{ id: string }> }).rawInputs[0]?.id;
+    expect(rawInputId).toBeTruthy();
+
+    const show = await runCli(['--json', 'workspace', 'ingest', 'show', 'dataset-space', rawInputId!], { cwd: root, env });
+    expect(show.exitCode).toBe(0);
+    expect(parseJsonEnvelope(show.stdout)).toMatchObject({
+      ok: true,
+      command: 'workspace.ingest.show',
+      data: {
+        rawInput: expect.objectContaining({
+          kind: 'csv',
+        }),
+        chunks: expect.arrayContaining([
+          expect.objectContaining({
+            markdown: expect.stringContaining('hyperliquid'),
+          }),
+        ]),
+      },
+    });
+
+    const search = await runCli(['--json', 'workspace', 'ingest', 'search', 'dataset-space', 'hyperliquid', '--kind', 'csv'], { cwd: root, env });
+    expect(search.exitCode).toBe(0);
+    expect(parseJsonEnvelope(search.stdout)).toMatchObject({
+      ok: true,
+      command: 'workspace.ingest.search',
+      data: {
+        results: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'csv',
+            label: 'Fills CSV',
+          }),
+        ]),
+      },
+    });
+  }, 30_000);
 });

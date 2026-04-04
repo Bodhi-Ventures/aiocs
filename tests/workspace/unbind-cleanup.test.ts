@@ -12,7 +12,7 @@ import {
   getWorkspaceIndexPath,
   getWorkspaceOutputPath,
 } from '../../src/workspace/artifacts.js';
-import { writeWorkspaceArtifact } from '../../src/workspace/storage.js';
+import { readWorkspaceArtifact, writeWorkspaceArtifact } from '../../src/workspace/storage.js';
 
 function buildSpec(id: string) {
   return parseSourceSpecObject({
@@ -122,7 +122,7 @@ describe('workspace unbind cleanup', () => {
       for (const [path, content] of [
         [summaryA, '# Alpha Summary\n\nAlpha maker flow.'],
         [conceptA, '# Alpha Concepts\n\nAlpha concept.'],
-        [summaryB, '# Beta Summary\n\nBeta trigger flow.'],
+        [summaryB, '# Beta Summary\n\nBeta trigger flow.\n\n<!-- aiocs-graph-navigation:start -->\n## Graph Navigation\n\n### Outgoing Relations\n- related_to -> [derived/concepts/hyperliquid.md](derived/concepts/hyperliquid.md)\n\n### Backlinks\n_None._\n<!-- aiocs-graph-navigation:end -->\n'],
         [conceptB, '# Beta Concepts\n\nBeta concept.'],
         [indexPath, '# Workspace Index\n\nAlpha and Beta.'],
         [reportPath, '# Brief\n\nAlpha and Beta report.'],
@@ -162,8 +162,17 @@ describe('workspace unbind cleanup', () => {
         contentHash: 'hash-b-summary',
         compilerMetadata: { provider: 'lmstudio' },
         stale: false,
-        chunks: [{ sectionTitle: 'beta', markdown: '# Beta Summary\n\nBeta trigger flow.' }],
+        chunks: [{ sectionTitle: 'beta', markdown: '# Beta Summary\n\nBeta trigger flow.\n\n<!-- aiocs-graph-navigation:start -->\n## Graph Navigation\n\n### Outgoing Relations\n- related_to -> [derived/concepts/hyperliquid.md](derived/concepts/hyperliquid.md)\n\n### Backlinks\n_None._\n<!-- aiocs-graph-navigation:end -->\n' }],
         provenance: [{ sourceId: sourceB.id, snapshotId: snapshotB.snapshotId, chunkIds: [2] }],
+        links: [
+          {
+            fromPath: summaryB,
+            toPath: conceptA,
+            relationKind: 'related_to',
+            anchorText: conceptA,
+            source: 'deterministic',
+          },
+        ],
       });
       catalog.upsertWorkspaceArtifact({
         workspaceId: 'cleanup',
@@ -233,5 +242,11 @@ describe('workspace unbind cleanup', () => {
 
     const search = await searchWorkspaceCatalog('cleanup', 'Alpha', { scope: 'derived' });
     expect(search.results).toEqual([]);
+    const survivingSummary = await readWorkspaceArtifact({
+      dataDir,
+      workspaceId: 'cleanup',
+      path: summaryB,
+    });
+    expect(survivingSummary.content).not.toContain(conceptA);
   });
 });

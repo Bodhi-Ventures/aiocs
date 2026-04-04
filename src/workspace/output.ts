@@ -12,6 +12,7 @@ import {
   getWorkspaceOutputPath,
 } from './artifacts.js';
 import { resolveEffectiveWorkspaceCompilerProfile } from './compiler-profile.js';
+import { buildArtifactLinks, syncWorkspaceGraphNavigation } from './graph.js';
 import { compileWithLmStudio } from './lmstudio.js';
 import { readWorkspaceArtifact, writeWorkspaceArtifact } from './storage.js';
 
@@ -20,6 +21,7 @@ type Catalog = ReturnType<typeof openCatalog>;
 type OutputFormat = 'report' | 'slides' | 'summary' | 'note';
 type WorkspaceGenerationContext = {
   contextSections: string[];
+  contextArtifactPaths: string[];
   provenanceEntries: Array<{
     sourceId: string;
     snapshotId: string;
@@ -224,6 +226,7 @@ async function collectWorkspaceGenerationContext(input: {
   const freshArtifactPaths: string[] = [];
 
   const contextSections: string[] = [];
+  const contextArtifactPaths: string[] = [];
   const provenanceEntries: WorkspaceGenerationContext['provenanceEntries'] = [];
   const rawInputProvenanceEntries: WorkspaceGenerationContext['rawInputProvenanceEntries'] = [];
 
@@ -247,6 +250,7 @@ async function collectWorkspaceGenerationContext(input: {
       path: getWorkspaceIndexPath(),
     });
     contextSections.push(indexContent.content);
+    contextArtifactPaths.push(getWorkspaceIndexPath());
     provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, getWorkspaceIndexPath()));
     rawInputProvenanceEntries.push(...input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, getWorkspaceIndexPath()));
   }
@@ -280,6 +284,7 @@ async function collectWorkspaceGenerationContext(input: {
         path,
       });
       contextSections.push(content.content);
+      contextArtifactPaths.push(path);
       provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path));
       rawInputProvenanceEntries.push(...input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, path));
     }
@@ -313,6 +318,7 @@ async function collectWorkspaceGenerationContext(input: {
         path,
       });
       contextSections.push(content.content);
+      contextArtifactPaths.push(path);
       provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path));
       rawInputProvenanceEntries.push(...rawInputProvenance);
     }
@@ -339,6 +345,7 @@ async function collectWorkspaceGenerationContext(input: {
 
   return {
     contextSections,
+    contextArtifactPaths,
     provenanceEntries,
     rawInputProvenanceEntries,
   };
@@ -415,6 +422,21 @@ async function generateWorkspaceArtifact(input: {
     ...(input.context.rawInputProvenanceEntries.length > 0
       ? { rawInputProvenance: mergeRawInputProvenance(input.context.rawInputProvenanceEntries) }
       : {}),
+    links: buildArtifactLinks(
+      input.path,
+      content,
+      [...new Set(input.context.contextArtifactPaths)].map((artifactPath) => ({
+        toPath: artifactPath,
+        relationKind: 'derived_from' as const,
+        anchorText: artifactPath,
+      })),
+    ),
+  });
+
+  await syncWorkspaceGraphNavigation({
+    catalog: input.catalog,
+    dataDir: input.dataDir,
+    workspaceId: input.workspaceId,
   });
 
   return {

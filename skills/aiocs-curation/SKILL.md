@@ -80,6 +80,9 @@ docs --json workspace compile market-structure
 docs --json workspace configure market-structure --auto-compile true
 docs --json workspace queue-run
 docs --json workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
+docs --json workspace ingest add market-structure csv /absolute/path/to/fills.csv --label "Fills CSV"
+docs --json workspace ingest add market-structure json /absolute/path/to/manifest.json --label "Research manifest"
+docs --json workspace ingest add market-structure jsonl /absolute/path/to/events.jsonl --label "Events JSONL"
 docs --json workspace output market-structure report --name weekly-brief
 docs --json workspace output market-structure slides --name weekly-brief
 docs --json workspace answer market-structure note "What changed?" --name quick-note

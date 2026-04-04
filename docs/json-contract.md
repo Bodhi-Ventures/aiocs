@@ -403,7 +403,26 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
   "graph": {
     "linkCount": 4,
     "brokenLinkCount": 0,
-    "orphanArtifactCount": 0
+    "orphanArtifactCount": 0,
+    "backlinkCount": 4,
+    "relationCounts": {
+      "explicit_link": 0,
+      "derived_from": 1,
+      "mentions": 1,
+      "related_to": 2,
+      "expands": 1,
+      "index_entry": 2,
+      "summary_of": 1,
+      "concept_of": 1,
+      "output_depends_on": 0
+    },
+    "mostLinkedArtifacts": [
+      {
+        "artifactPath": "derived/index.md",
+        "incomingCount": 0,
+        "outgoingCount": 2
+      }
+    ]
   },
   "lintSummary": {
     "status": "pass",
@@ -413,7 +432,10 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
     "missingArtifactCount": 0,
     "brokenLinkCount": 0,
     "orphanArtifactCount": 0,
-    "suggestedConceptCount": 0
+    "suggestedConceptCount": 0,
+    "duplicateConceptCandidateCount": 0,
+    "missingArticleCandidateCount": 0,
+    "followUpQuestionCount": 0
   },
   "health": {
     "status": "healthy",
@@ -423,7 +445,10 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
     "brokenLinkCount": 0,
     "orphanArtifactCount": 0,
     "rawInputCount": 0,
-    "lintFindingCount": 0
+    "lintFindingCount": 0,
+    "duplicateConceptCandidateCount": 0,
+    "missingArticleCandidateCount": 0,
+    "followUpQuestionCount": 0
   },
   "compileRuns": [
     {
@@ -440,13 +465,13 @@ Workspace commands manage derived wiki artifacts backed by canonical source snap
 {
   "workspaceId": "market-structure",
   "rawInput": {
-    "id": "markdown-dir-notes-abc123def0",
+    "id": "csv-fills-abc123def0",
     "workspaceId": "market-structure",
-    "kind": "markdown-dir",
-    "label": "Research notes",
-    "sourcePath": "/absolute/path/to/notes",
-    "storagePath": "raw/markdown-dir-notes-abc123def0",
-    "extractedTextPath": null,
+    "kind": "csv",
+    "label": "Fills CSV",
+    "sourcePath": "/absolute/path/to/fills.csv",
+    "storagePath": "raw/csv-fills-abc123def0/fills.csv",
+    "extractedTextPath": "raw/csv-fills-abc123def0/fills.csv.txt",
     "contentHash": "sha256...",
     "chunkCount": 12
   }
@@ -465,12 +490,12 @@ Raw-input search returns:
   "hasMore": false,
   "results": [
     {
-      "rawInputId": "markdown-dir-notes-abc123def0",
-      "kind": "markdown-dir",
-      "label": "Research notes",
-      "sectionTitle": "Fee schedule",
+      "rawInputId": "csv-fills-abc123def0",
+      "kind": "csv",
+      "label": "Fills CSV",
+      "sectionTitle": "Fills CSV rows 1-2",
       "markdown": "...",
-      "filePath": "notes.md",
+      "filePath": "fills.csv",
       "score": 0.42
     }
   ]
@@ -576,7 +601,10 @@ Raw-input search returns:
     "missingArtifactCount": 0,
     "brokenLinkCount": 0,
     "orphanArtifactCount": 0,
-    "suggestedConceptCount": 0
+    "suggestedConceptCount": 0,
+    "duplicateConceptCandidateCount": 1,
+    "missingArticleCandidateCount": 1,
+    "followUpQuestionCount": 2
   },
   "findings": [
     {
@@ -584,8 +612,15 @@ Raw-input search returns:
       "severity": "warn",
       "summary": "Artifact provenance points at an older snapshot.",
       "artifactPath": "derived/sources/hyperliquid/summary.md"
+    },
+    {
+      "kind": "follow-up-question-suggestion",
+      "severity": "warn",
+      "summary": "What important workflows, caveats, or open questions remain unresolved for derived/concepts/hyperliquid.md?",
+      "artifactPath": "derived/concepts/hyperliquid.md"
     }
-  ]
+  ],
+  "suggestionsArtifactPath": "outputs/suggestions/lint.md"
 }
 ```
 

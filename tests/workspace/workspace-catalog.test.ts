@@ -321,6 +321,18 @@ describe('workspace catalog', () => {
         }),
       ]);
 
+      expect(catalog.deleteWorkspaceArtifacts({
+        workspaceId: 'research-desk',
+        artifactPaths: ['derived/raw/markdown-paper/summary.md'],
+      })).toEqual({
+        deletedCount: 1,
+      });
+      expect(catalog.listWorkspaceArtifactLinks({
+        workspaceId: 'research-desk',
+        artifactPath: 'derived/raw/markdown-paper/summary.md',
+        direction: 'outgoing',
+      })).toEqual([]);
+
       const queued = catalog.enqueueWorkspaceCompile({
         workspaceId: 'research-desk',
         rawInputIds: ['markdown-paper'],

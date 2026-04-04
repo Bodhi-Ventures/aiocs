@@ -243,6 +243,8 @@ Workspace compile and maintenance are incremental:
 - unchanged sources are skipped on later compiles
 - changed sources regenerate only their derived summaries/concepts plus the shared index
 - changed raw inputs regenerate only their derived summaries/concepts plus the shared index
+- compiled artifacts get deterministic graph navigation with outgoing relations and backlinks
+- workspace lint persists durable suggestion artifacts for duplicate concepts, missing articles, and follow-up questions
 - generated reports/slides keep provenance to the bound source snapshots
 - generated notes/reports/slides are marked stale when their inputs change
 
@@ -258,6 +260,9 @@ Workspace-scoped raw ingest:
 docs workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
 docs workspace ingest add market-structure pdf /absolute/path/to/paper.pdf --label "Paper PDF"
 docs workspace ingest add market-structure image /absolute/path/to/diagram.png --label "Market diagram"
+docs workspace ingest add market-structure csv /absolute/path/to/fills.csv --label "Fills CSV"
+docs workspace ingest add market-structure json /absolute/path/to/manifest.json --label "Research manifest"
+docs workspace ingest add market-structure jsonl /absolute/path/to/events.jsonl --label "Events JSONL"
 docs workspace ingest list market-structure
 docs workspace ingest search market-structure "fee tier" --kind markdown-dir
 docs workspace ingest show market-structure markdown-dir-notes-<hash>

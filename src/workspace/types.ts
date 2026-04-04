@@ -32,7 +32,8 @@ export type WorkspaceArtifactLinkRelationKind =
   | 'summary_of'
   | 'concept_of'
   | 'output_depends_on';
-export type WorkspaceRawInputKind = 'markdown-dir' | 'pdf' | 'image';
+export type WorkspaceDatasetRawInputKind = 'csv' | 'json' | 'jsonl';
+export type WorkspaceRawInputKind = 'markdown-dir' | 'pdf' | 'image' | WorkspaceDatasetRawInputKind;
 export type WorkspaceSyncTargetKind = 'obsidian';
 
 export type WorkspaceRecord = {
@@ -202,4 +203,7 @@ export type WorkspaceHealthSummary = {
   orphanArtifactCount: number;
   rawInputCount: number;
   lintFindingCount: number;
+  duplicateConceptCandidateCount: number;
+  missingArticleCandidateCount: number;
+  followUpQuestionCount: number;
 };
