@@ -19,7 +19,22 @@ import { readWorkspaceArtifact, writeWorkspaceArtifact } from './storage.js';
 type Catalog = ReturnType<typeof openCatalog>;
 
 type OutputFormat = 'report' | 'slides' | 'summary' | 'note';
+type WorkspaceGenerationContextEntry = {
+  content: string;
+  artifactPath: string;
+  provenanceEntries: Array<{
+    sourceId: string;
+    snapshotId: string;
+    chunkIds: number[];
+  }>;
+  rawInputProvenanceEntries: Array<{
+    rawInputId: string;
+    chunkIds: number[];
+  }>;
+};
+
 type WorkspaceGenerationContext = {
+  contextEntries: WorkspaceGenerationContextEntry[];
   contextSections: string[];
   contextArtifactPaths: string[];
   provenanceEntries: Array<{
@@ -32,6 +47,55 @@ type WorkspaceGenerationContext = {
     chunkIds: number[];
   }>;
 };
+
+function boundWorkspaceGenerationContext(input: {
+  entries: WorkspaceGenerationContextEntry[];
+  maxInputChars: number;
+}): WorkspaceGenerationContext {
+  const budget = Math.max(2_000, input.maxInputChars - 1_000);
+  const boundedEntries: WorkspaceGenerationContextEntry[] = [];
+  let totalLength = 0;
+
+  for (const entry of input.entries) {
+    const availableForEntry = budget - totalLength - 2;
+    if (availableForEntry <= 0) {
+      break;
+    }
+
+    const content = entry.content.length > availableForEntry
+      ? `${entry.content.slice(0, Math.max(0, availableForEntry - 16)).trimEnd()}\n\n[truncated]`
+      : entry.content;
+
+    if (content.trim().length === 0) {
+      continue;
+    }
+
+    boundedEntries.push({
+      ...entry,
+      content,
+    });
+    totalLength += content.length + 2;
+
+    if (totalLength >= budget) {
+      break;
+    }
+  }
+
+  if (boundedEntries.length === 0) {
+    throw new AiocsError(
+      AIOCS_ERROR_CODES.invalidArgument,
+      'Workspace output generation has no usable context after applying the compiler input budget.',
+    );
+  }
+
+  return {
+    contextEntries: boundedEntries,
+    contextSections: boundedEntries.map((entry) => entry.content),
+    contextArtifactPaths: boundedEntries.map((entry) => entry.artifactPath),
+    provenanceEntries: boundedEntries.flatMap((entry) => entry.provenanceEntries),
+    rawInputProvenanceEntries: boundedEntries.flatMap((entry) => entry.rawInputProvenanceEntries),
+  };
+}
 
 function ensureLeadingTitle(content: string, title: string): string {
   const lines = content.trim().split('\n');
@@ -143,6 +207,17 @@ function buildOutputPrompt(format: OutputFormat, prompt: string | undefined, con
         '- Preserve identifiers, package names, runtimes, and URLs exactly as they appear in the workspace context.',
         '- Use standard Markdown headings, paragraphs, and bullet lists inside slides.',
       ]
+    : format === 'note'
+      ? [
+          '- Output valid Markdown only.',
+          '- Start with an H1 title.',
+          '- Answer the question directly in the opening section.',
+          '- Do not include headings or bullets named `User Question`, `Workspace Context`, `Looking through the text`, or similar prompt scaffolding.',
+          '- Do not narrate your reasoning process or mention the prompt, context window, or user instructions.',
+          '- Do not include reasoning, analysis, `<think>` blocks, or channel/control tokens.',
+          '- Preserve identifiers, package names, runtimes, and URLs exactly as they appear in the workspace context.',
+          '- Use standard Markdown headings, paragraphs, and bullet lists.',
+        ]
     : [
         '- Output valid Markdown only.',
         '- Start with an H1 title.',
@@ -225,10 +300,7 @@ async function collectWorkspaceGenerationContext(input: {
   const staleArtifactPaths: string[] = [];
   const freshArtifactPaths: string[] = [];
 
-  const contextSections: string[] = [];
-  const contextArtifactPaths: string[] = [];
-  const provenanceEntries: WorkspaceGenerationContext['provenanceEntries'] = [];
-  const rawInputProvenanceEntries: WorkspaceGenerationContext['rawInputProvenanceEntries'] = [];
+  const contextEntries: WorkspaceGenerationContextEntry[] = [];
 
   const indexArtifact = input.catalog.getWorkspaceArtifact(input.workspaceId, getWorkspaceIndexPath());
   if (indexArtifact) {
@@ -249,10 +321,12 @@ async function collectWorkspaceGenerationContext(input: {
       workspaceId: input.workspaceId,
       path: getWorkspaceIndexPath(),
     });
-    contextSections.push(indexContent.content);
-    contextArtifactPaths.push(getWorkspaceIndexPath());
-    provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, getWorkspaceIndexPath()));
-    rawInputProvenanceEntries.push(...input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, getWorkspaceIndexPath()));
+    contextEntries.push({
+      content: indexContent.content,
+      artifactPath: getWorkspaceIndexPath(),
+      provenanceEntries: input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, getWorkspaceIndexPath()),
+      rawInputProvenanceEntries: input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, getWorkspaceIndexPath()),
+    });
   }
 
   for (const binding of bindings) {
@@ -283,10 +357,12 @@ async function collectWorkspaceGenerationContext(input: {
         workspaceId: input.workspaceId,
         path,
       });
-      contextSections.push(content.content);
-      contextArtifactPaths.push(path);
-      provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path));
-      rawInputProvenanceEntries.push(...input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, path));
+      contextEntries.push({
+        content: content.content,
+        artifactPath: path,
+        provenanceEntries: input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path),
+        rawInputProvenanceEntries: input.catalog.listWorkspaceArtifactRawInputProvenance(input.workspaceId, path),
+      });
     }
   }
 
@@ -317,10 +393,12 @@ async function collectWorkspaceGenerationContext(input: {
         workspaceId: input.workspaceId,
         path,
       });
-      contextSections.push(content.content);
-      contextArtifactPaths.push(path);
-      provenanceEntries.push(...input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path));
-      rawInputProvenanceEntries.push(...rawInputProvenance);
+      contextEntries.push({
+        content: content.content,
+        artifactPath: path,
+        provenanceEntries: input.catalog.listWorkspaceArtifactProvenance(input.workspaceId, path),
+        rawInputProvenanceEntries: rawInputProvenance,
+      });
     }
   }
   input.catalog.setWorkspaceArtifactsStale({
@@ -344,10 +422,11 @@ async function collectWorkspaceGenerationContext(input: {
   }
 
   return {
-    contextSections,
-    contextArtifactPaths,
-    provenanceEntries,
-    rawInputProvenanceEntries,
+    contextEntries,
+    contextSections: contextEntries.map((entry) => entry.content),
+    contextArtifactPaths: contextEntries.map((entry) => entry.artifactPath),
+    provenanceEntries: contextEntries.flatMap((entry) => entry.provenanceEntries),
+    rawInputProvenanceEntries: contextEntries.flatMap((entry) => entry.rawInputProvenanceEntries),
   };
 }
 
@@ -377,7 +456,11 @@ async function generateWorkspaceArtifact(input: {
   }
 
   const effectiveCompilerProfile = resolveEffectiveWorkspaceCompilerProfile(workspace.compilerProfile, input.env);
-  const prompt = buildOutputPrompt(input.format, input.prompt, input.context.contextSections.join('\n\n'));
+  const boundedContext = boundWorkspaceGenerationContext({
+    entries: input.context.contextEntries,
+    maxInputChars: effectiveCompilerProfile.maxInputChars,
+  });
+  const prompt = buildOutputPrompt(input.format, input.prompt, boundedContext.contextSections.join('\n\n'));
   const generated = await compileWithLmStudio({
     profile: effectiveCompilerProfile,
     systemPrompt: 'You create provenance-backed workspace outputs. Return only the final Markdown document. Never emit reasoning, analysis, tool traces, <think> tags, or channel/control tokens.',
@@ -418,14 +501,14 @@ async function generateWorkspaceArtifact(input: {
         markdown: content,
       },
     ],
-    provenance: mergeProvenance(input.context.provenanceEntries),
-    ...(input.context.rawInputProvenanceEntries.length > 0
-      ? { rawInputProvenance: mergeRawInputProvenance(input.context.rawInputProvenanceEntries) }
+    provenance: mergeProvenance(boundedContext.provenanceEntries),
+    ...(boundedContext.rawInputProvenanceEntries.length > 0
+      ? { rawInputProvenance: mergeRawInputProvenance(boundedContext.rawInputProvenanceEntries) }
       : {}),
     links: buildArtifactLinks(
       input.path,
       content,
-      [...new Set(input.context.contextArtifactPaths)].map((artifactPath) => ({
+      [...new Set(boundedContext.contextArtifactPaths)].map((artifactPath) => ({
         toPath: artifactPath,
         relationKind: 'derived_from' as const,
         anchorText: artifactPath,

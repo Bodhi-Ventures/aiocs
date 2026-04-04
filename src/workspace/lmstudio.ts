@@ -49,6 +49,16 @@ function stripChannelMarkers(lines: string[]): string[] {
   return lines.filter((line) => !/^<\|[^>]+>.*$/.test(line.trim()));
 }
 
+function normalizeMetaCandidate(line: string): string {
+  return line
+    .trim()
+    .replace(/^[-*]\s+/, '')
+    .replace(/^[*_`]+/, '')
+    .replace(/[*_`]+:?\s*$/, '')
+    .replace(/^\(([^)]+)\):?/, '$1')
+    .trim();
+}
+
 function isLikelyDocumentStart(line: string): boolean {
   const trimmed = line.trim();
   if (trimmed.length === 0) {
@@ -74,8 +84,19 @@ function isLikelyReasoningLine(line: string): boolean {
 }
 
 function isLikelyMetaLeakLine(line: string): boolean {
-  const trimmed = line.trim();
-  return /\b(?:Actually, looking at the text|let'?s check|context says)\b/i.test(trimmed);
+  const normalized = normalizeMetaCandidate(line);
+  return /\b(?:Actually, looking at the text|let'?s check|context says)\b/i.test(normalized)
+    || /^(?:user question|workspace context(?: provided)?|the user asks|looking through the text)\b/i.test(normalized);
+}
+
+function isLikelyReasoningTailStart(line: string): boolean {
+  const normalized = normalizeMetaCandidate(line);
+  if (normalized.length === 0) {
+    return false;
+  }
+
+  return /^(?:final check|double check|sanity check|one detail|one more look|final polish|final structure|self-correction|self correction|wait|actually)\b/i.test(normalized)
+    || /^(?:looking at the user question again|looking at the context|one more look at the context|let me check|i will|i'll|i should|i can|i need to|i am going to|since the context)\b/i.test(normalized);
 }
 
 function dedentCommonIndentation(lines: string[]): string[] {
@@ -113,10 +134,13 @@ function sanitizeGeneratedMarkdown(content: string): string {
     firstMeaningfulIndex += 1;
   }
 
+  const meaningfulLines = candidateLines.slice(firstMeaningfulIndex);
+  const reasoningTailIndex = meaningfulLines.findIndex((line) => isLikelyReasoningTailStart(line));
+  const boundedLines = reasoningTailIndex >= 0
+    ? meaningfulLines.slice(0, reasoningTailIndex)
+    : meaningfulLines;
   const cleanedLines = dedentCommonIndentation(
-    candidateLines
-      .slice(firstMeaningfulIndex)
-      .filter((line) => !isLikelyMetaLeakLine(line)),
+    boundedLines.filter((line) => !isLikelyMetaLeakLine(line)),
   );
 
   return cleanedLines

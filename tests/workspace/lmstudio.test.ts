@@ -155,4 +155,73 @@ describe('LM Studio workspace compiler', () => {
       '* **Note**: stable runtime',
     ].join('\n'));
   });
+
+  it('strips prompt scaffolding lines from generated notes', async () => {
+    modelRespondMock.mockResolvedValueOnce({
+      content: [
+        '# place-orders-overview',
+        '',
+        '* User Question: "What does this API do?"',
+        '* Workspace Context provided: A local workspace.',
+        '* The user asks about order placement.',
+        '* Looking through the text:',
+        '* It accepts limit orders via an HF-optimized API.',
+        '* Orders are matched in 5-15 ms and settled on Ink L2.',
+      ].join('\n'),
+    });
+
+    const result = await compileWithLmStudio({
+      profile: resolveWorkspaceCompilerProfile(),
+      systemPrompt: 'Return only the final Markdown note.',
+      userPrompt: 'Answer the workspace question.',
+      env: {
+        AIOCS_LMSTUDIO_BASE_URL: 'http://127.0.0.1:1234',
+        AIOCS_LMSTUDIO_MODEL: 'google/gemma-4-26b-a4b',
+      },
+    });
+
+    expect(result.content).toBe([
+      '# place-orders-overview',
+      '',
+      '* It accepts limit orders via an HF-optimized API.',
+      '* Orders are matched in 5-15 ms and settled on Ink L2.',
+    ].join('\n'));
+  });
+
+  it('truncates self-evaluation tails that leak into final workspace answers', async () => {
+    modelRespondMock.mockResolvedValueOnce({
+      content: [
+        '# Order Submission in the Nado API',
+        '',
+        '## Role of Limit Order Submission',
+        'The Nado architecture utilizes an HF-optimized API for limit-order submission.',
+        '',
+        '*Double check*: Does this answer the user question using only the context? Yes.',
+        '',
+        '*One more look at the context*: The text says "HF-optimized API".',
+        '',
+        '(Self-Correction): The user asks "What is the role of Place Orders".',
+        '',
+        '*Final Structure*:',
+        '# Replacement heading that should not survive',
+      ].join('\n'),
+    });
+
+    const result = await compileWithLmStudio({
+      profile: resolveWorkspaceCompilerProfile(),
+      systemPrompt: 'Return only the final Markdown note.',
+      userPrompt: 'Answer the workspace question.',
+      env: {
+        AIOCS_LMSTUDIO_BASE_URL: 'http://127.0.0.1:1234',
+        AIOCS_LMSTUDIO_MODEL: 'google/gemma-4-26b-a4b',
+      },
+    });
+
+    expect(result.content).toBe([
+      '# Order Submission in the Nado API',
+      '',
+      '## Role of Limit Order Submission',
+      'The Nado architecture utilizes an HF-optimized API for limit-order submission.',
+    ].join('\n'));
+  });
 });

@@ -338,4 +338,105 @@ describe('workspace outputs', () => {
       catalog.close();
     }
   });
+
+  it('bounds workspace answer context to the configured compiler input budget', async () => {
+    const catalog = openCatalog({ dataDir: root });
+    const spec = parseSourceSpecObject({
+      id: 'hyperliquid',
+      label: 'Hyperliquid Docs',
+      startUrls: ['https://example.com/docs/start'],
+      allowedHosts: ['example.com'],
+      discovery: {
+        include: ['https://example.com/docs/**'],
+        exclude: [],
+        maxPages: 25,
+      },
+      extract: {
+        strategy: 'selector',
+        selector: 'article',
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+    });
+
+    try {
+      compileWithLmStudioMock.mockImplementation(async ({ userPrompt }: { userPrompt: string }) => {
+        if (userPrompt.includes('summary artifact')) {
+          return {
+            model: 'google/gemma-4-26b-a4b',
+            content: `# Summary\n\n${'A'.repeat(5_000)}`,
+          };
+        }
+        if (userPrompt.includes('concept page')) {
+          return {
+            model: 'google/gemma-4-26b-a4b',
+            content: `# Concepts\n\n${'B'.repeat(5_000)}`,
+          };
+        }
+
+        return {
+          model: 'google/gemma-4-26b-a4b',
+          content: '# Note\n\nBounded answer output.',
+        };
+      });
+
+      catalog.upsertSource(spec);
+      catalog.recordSuccessfulSnapshot({
+        sourceId: spec.id,
+        pages: [
+          {
+            url: 'https://example.com/docs/start',
+            title: 'Orders',
+            markdown: '# Orders\n\nMaker flow details.',
+          },
+        ],
+      });
+
+      catalog.createWorkspace({
+        id: 'bounded-answer',
+        label: 'Bounded Answer Workspace',
+        compilerProfile: {
+          provider: 'lmstudio',
+          model: 'google/gemma-4-26b-a4b',
+          temperature: 0.1,
+          topP: 0.9,
+          maxInputChars: 3_000,
+          maxOutputTokens: 4_096,
+          concurrency: 1,
+        },
+        defaultOutputFormats: ['report'],
+      });
+      catalog.bindWorkspaceSources('bounded-answer', [spec.id]);
+
+      await compileWorkspace({
+        catalog,
+        dataDir: root,
+        workspaceId: 'bounded-answer',
+      });
+
+      compileWithLmStudioMock.mockClear();
+
+      const note = await answerWorkspaceQuestion({
+        catalog,
+        dataDir: root,
+        workspaceId: 'bounded-answer',
+        question: 'What matters most in this workflow?',
+        format: 'note',
+        name: 'bounded',
+      });
+
+      expect(note.path).toBe('derived/notes/bounded.md');
+      const answerCall = compileWithLmStudioMock.mock.calls.at(-1)?.[0] as { userPrompt: string; profile: { maxInputChars: number } };
+      expect(answerCall.profile.maxInputChars).toBe(3_000);
+      expect(answerCall.userPrompt.length).toBeLessThan(3_400);
+      expect(answerCall.userPrompt).toContain('[truncated]');
+      expect(answerCall.userPrompt).toContain('Do not include headings or bullets named `User Question`, `Workspace Context`, `Looking through the text`, or similar prompt scaffolding.');
+    } finally {
+      catalog.close();
+    }
+  });
 });
