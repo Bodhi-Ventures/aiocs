@@ -605,7 +605,7 @@ function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS workspace_raw_inputs (
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-      kind TEXT NOT NULL CHECK(kind IN ('markdown-dir', 'pdf', 'image')),
+      kind TEXT NOT NULL CHECK(kind IN ('markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl')),
       label TEXT NOT NULL,
       source_path TEXT NOT NULL,
       storage_path TEXT NOT NULL,
@@ -740,6 +740,60 @@ function initSchema(db: Database.Database): void {
   const workspaceColumns = db.prepare('PRAGMA table_info(workspaces)').all() as Array<{ name: string }>;
   if (!workspaceColumns.some((column) => column.name === 'auto_compile_enabled')) {
     db.exec(`ALTER TABLE workspaces ADD COLUMN auto_compile_enabled INTEGER NOT NULL DEFAULT 0 CHECK(auto_compile_enabled IN (0, 1))`);
+  }
+
+  const workspaceRawInputsTable = db.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'workspace_raw_inputs'
+  `).get() as { sql: string } | undefined;
+  if (workspaceRawInputsTable?.sql && !workspaceRawInputsTable.sql.includes("'csv'")) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      ALTER TABLE workspace_raw_inputs RENAME TO workspace_raw_inputs_old;
+      CREATE TABLE workspace_raw_inputs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl')),
+        label TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        extracted_text_path TEXT,
+        content_hash TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO workspace_raw_inputs (
+        id,
+        workspace_id,
+        kind,
+        label,
+        source_path,
+        storage_path,
+        extracted_text_path,
+        content_hash,
+        metadata_json,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        workspace_id,
+        kind,
+        label,
+        source_path,
+        storage_path,
+        extracted_text_path,
+        content_hash,
+        metadata_json,
+        created_at,
+        updated_at
+      FROM workspace_raw_inputs_old;
+      DROP TABLE workspace_raw_inputs_old;
+      PRAGMA foreign_keys = ON;
+    `);
   }
 }
 
@@ -2305,14 +2359,30 @@ export function openCatalog(options: OpenCatalogOptions) {
         return { deletedCount: 0 };
       }
 
-      const result = db.prepare(`
-        DELETE FROM workspace_artifacts
-        WHERE workspace_id = ?
-          AND path IN (${uniquePaths.map(() => '?').join(',')})
-      `).run(
-        input.workspaceId,
-        ...uniquePaths,
-      );
+      const transaction = db.transaction(() => {
+        db.prepare(`
+          DELETE FROM workspace_artifact_links
+          WHERE workspace_id = ?
+            AND (
+              from_path IN (${uniquePaths.map(() => '?').join(',')})
+              OR to_path IN (${uniquePaths.map(() => '?').join(',')})
+            )
+        `).run(
+          input.workspaceId,
+          ...uniquePaths,
+          ...uniquePaths,
+        );
+
+        return db.prepare(`
+          DELETE FROM workspace_artifacts
+          WHERE workspace_id = ?
+            AND path IN (${uniquePaths.map(() => '?').join(',')})
+        `).run(
+          input.workspaceId,
+          ...uniquePaths,
+        );
+      });
+      const result = transaction();
 
       return {
         deletedCount: result.changes,

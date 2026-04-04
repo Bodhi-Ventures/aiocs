@@ -142,6 +142,24 @@ describe('workspace outputs', () => {
           kind: 'slides',
         }),
       );
+      expect(catalog.listWorkspaceArtifactLinks({
+        workspaceId: 'outputs',
+        artifactPath: report.path,
+        direction: 'outgoing',
+      })).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          relationKind: 'derived_from',
+          toPath: 'derived/index.md',
+        }),
+        expect.objectContaining({
+          relationKind: 'derived_from',
+          toPath: 'derived/sources/hyperliquid/summary.md',
+        }),
+        expect.objectContaining({
+          relationKind: 'derived_from',
+          toPath: 'derived/concepts/hyperliquid.md',
+        }),
+      ]));
     } finally {
       catalog.close();
     }
@@ -307,6 +325,7 @@ describe('workspace outputs', () => {
 
       const lintReport = await lintWorkspace({
         catalog,
+        dataDir: root,
         workspaceId: 'raw-answer',
       });
       expect(lintReport.findings).not.toEqual(expect.arrayContaining([

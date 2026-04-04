@@ -54,6 +54,7 @@
     "@qdrant/js-client-rest": "1.17.0",
     "better-sqlite3": "12.4.1",
     "commander": "14.0.1",
+    "csv-parse": "6.2.1",
     "jsdom": "27.0.1",
     "pdf-parse": "2.4.5",
     "playwright": "1.57.0",

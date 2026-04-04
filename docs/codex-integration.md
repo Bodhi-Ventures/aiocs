@@ -123,9 +123,13 @@ docs --json workspace compile market-structure
 docs --json workspace queue-run
 docs --json workspace search market-structure "transport design" --scope mixed
 docs --json workspace artifact show market-structure derived/index.md
+docs --json workspace lint market-structure
 docs --json workspace output market-structure report --name weekly-brief
 docs --json workspace answer market-structure note "What changed in websocket transport?" --name websocket-note
 docs --json workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
+docs --json workspace ingest add market-structure csv /absolute/path/to/fills.csv --label "Fills CSV"
+docs --json workspace ingest add market-structure json /absolute/path/to/manifest.json --label "Research manifest"
+docs --json workspace ingest add market-structure jsonl /absolute/path/to/events.jsonl --label "Events JSONL"
 docs --json workspace sync obsidian market-structure /absolute/path/to/vault
 ```
 

@@ -478,4 +478,154 @@ describe('workspace compile pipeline', () => {
       catalog.close();
     }
   });
+
+  it('renders deterministic graph navigation and backlink sections for compiled artifacts', async () => {
+    const catalog = openCatalog({ dataDir: root });
+    const source = buildSpec('hyperliquid');
+
+    try {
+      catalog.upsertSource(source);
+      catalog.recordSuccessfulSnapshot({
+        sourceId: source.id,
+        pages: [
+          {
+            url: 'https://example.com/docs/hyperliquid/orders',
+            title: 'Orders',
+            markdown: '# Orders\n\nMaker flow for Hyperliquid.',
+          },
+        ],
+      });
+
+      catalog.createWorkspace({
+        id: 'graph-workspace',
+        label: 'Graph Workspace',
+        compilerProfile: {
+          provider: 'lmstudio',
+          model: 'google/gemma-4-26b-a4b',
+          temperature: 0.1,
+          topP: 0.9,
+          maxInputChars: 12_000,
+          maxOutputTokens: 4_096,
+          concurrency: 1,
+        },
+        defaultOutputFormats: ['report'],
+      });
+      catalog.bindWorkspaceSources('graph-workspace', [source.id]);
+
+      await compileWorkspace({
+        catalog,
+        dataDir: root,
+        workspaceId: 'graph-workspace',
+      });
+
+      const summaryPath = join(root, 'workspaces', 'graph-workspace', 'derived', 'sources', 'hyperliquid', 'summary.md');
+      const conceptPath = join(root, 'workspaces', 'graph-workspace', 'derived', 'concepts', 'hyperliquid.md');
+      const summaryContent = readFileSync(summaryPath, 'utf8');
+      const conceptContent = readFileSync(conceptPath, 'utf8');
+
+      expect(summaryContent).toContain('## Graph Navigation');
+      expect(summaryContent).toContain('### Outgoing Relations');
+      expect(summaryContent).toContain('mentions');
+      expect(summaryContent).toContain('[derived/concepts/hyperliquid.md](derived/concepts/hyperliquid.md)');
+      expect(summaryContent).toContain('### Backlinks');
+      expect(summaryContent).toContain('index_entry from [derived/index.md](derived/index.md)');
+      expect(summaryContent).toContain('expands from [derived/concepts/hyperliquid.md](derived/concepts/hyperliquid.md)');
+
+      expect(conceptContent).toContain('## Graph Navigation');
+      expect(conceptContent).toContain('expands');
+      expect(conceptContent).toContain('[derived/sources/hyperliquid/summary.md](derived/sources/hyperliquid/summary.md)');
+
+      expect(catalog.listWorkspaceArtifactLinks({
+        workspaceId: 'graph-workspace',
+        artifactPath: 'derived/sources/hyperliquid/summary.md',
+        direction: 'outgoing',
+      })).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          relationKind: 'related_to',
+          toPath: 'derived/index.md',
+        }),
+        expect.objectContaining({
+          relationKind: 'mentions',
+          toPath: 'derived/concepts/hyperliquid.md',
+        }),
+      ]));
+
+      expect(catalog.listWorkspaceArtifactLinks({
+        workspaceId: 'graph-workspace',
+        artifactPath: 'derived/concepts/hyperliquid.md',
+        direction: 'outgoing',
+      })).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          relationKind: 'expands',
+          toPath: 'derived/sources/hyperliquid/summary.md',
+        }),
+      ]));
+    } finally {
+      catalog.close();
+    }
+  });
+
+  it('compiles dataset raw inputs with raw-input provenance preserved on derived artifacts', async () => {
+    const catalog = openCatalog({ dataDir: root });
+
+    try {
+      catalog.createWorkspace({
+        id: 'dataset-workspace',
+        label: 'Dataset Workspace',
+        compilerProfile: {
+          provider: 'lmstudio',
+          model: 'google/gemma-4-26b-a4b',
+          temperature: 0.1,
+          topP: 0.9,
+          maxInputChars: 12_000,
+          maxOutputTokens: 4_096,
+          concurrency: 1,
+        },
+        defaultOutputFormats: ['report'],
+      });
+
+      catalog.upsertWorkspaceRawInput({
+        id: 'fills-csv',
+        workspaceId: 'dataset-workspace',
+        kind: 'csv',
+        label: 'Fills CSV',
+        sourcePath: join(root, 'fills.csv'),
+        storagePath: 'raw/fills-csv/fills.csv',
+        contentHash: 'fills-csv-hash',
+        metadata: {
+          absolutePath: join(root, 'fills.csv'),
+          rowCount: 2,
+          columnCount: 3,
+          columns: ['symbol', 'venue', 'volume'],
+        },
+        chunks: [
+          {
+            sectionTitle: 'Dataset Overview',
+            markdown: '# Fills CSV\n\n- symbol: BTC\n- venue: hyperliquid\n- volume: 123',
+            filePath: 'fills.csv',
+          },
+        ],
+      });
+
+      const result = await compileWorkspace({
+        catalog,
+        dataDir: root,
+        workspaceId: 'dataset-workspace',
+      });
+
+      expect(result.changedRawInputIds).toEqual(['fills-csv']);
+      expect(catalog.listWorkspaceArtifactRawInputProvenance('dataset-workspace', 'derived/raw/fills-csv/summary.md')).toEqual([
+        expect.objectContaining({
+          rawInputId: 'fills-csv',
+        }),
+      ]);
+      expect(catalog.listWorkspaceArtifactRawInputProvenance('dataset-workspace', 'derived/raw/fills-csv/concept.md')).toEqual([
+        expect.objectContaining({
+          rawInputId: 'fills-csv',
+        }),
+      ]);
+    } finally {
+      catalog.close();
+    }
+  });
 });

@@ -51,6 +51,10 @@ export function getExpectedArtifactSourceIds(artifactPath: string, boundSourceId
     return [...boundSourceIds];
   }
 
+  if (artifactPath.startsWith('derived/raw/') || artifactPath.startsWith('outputs/') || artifactPath.startsWith('derived/notes/')) {
+    return [];
+  }
+
   for (const sourceId of boundSourceIds) {
     const bundle = getSourceArtifactBundle(sourceId);
     if (artifactPath === bundle.summaryPath || artifactPath === bundle.conceptPath) {
@@ -146,6 +150,11 @@ export function getWorkspaceAnswerPath(
     case 'note':
       return `derived/notes/${baseName}.md`;
   }
+}
+
+export function getWorkspaceSuggestionPath(name = 'lint'): string {
+  const baseName = slugifySegment(name);
+  return `outputs/suggestions/${baseName}.md`;
 }
 
 export function getWorkspaceObsidianExportSubdir(workspaceId: string): string {

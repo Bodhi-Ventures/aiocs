@@ -268,7 +268,7 @@ const workspaceCompileJobSchema = z.object({
 const workspaceRawInputSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
-  kind: z.enum(['markdown-dir', 'pdf', 'image']),
+  kind: z.enum(['markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl']),
   label: z.string(),
   sourcePath: z.string(),
   storagePath: z.string(),
@@ -317,7 +317,7 @@ const workspaceArtifactLinkSchema = z.object({
   toPath: z.string(),
   relationKind: z.enum(['explicit_link', 'derived_from', 'mentions', 'related_to', 'expands', 'index_entry', 'summary_of', 'concept_of', 'output_depends_on']),
   anchorText: z.string().nullable(),
-  source: z.enum(['compiler', 'system']),
+  source: z.enum(['compiler', 'deterministic']),
   broken: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -332,6 +332,9 @@ const workspaceHealthSchema = z.object({
   orphanArtifactCount: z.number().int().nonnegative(),
   rawInputCount: z.number().int().nonnegative(),
   lintFindingCount: z.number().int().nonnegative(),
+  duplicateConceptCandidateCount: z.number().int().nonnegative(),
+  missingArticleCandidateCount: z.number().int().nonnegative(),
+  followUpQuestionCount: z.number().int().nonnegative(),
 });
 
 const workspaceBindingSchema = z.object({
@@ -371,20 +374,35 @@ const workspaceLintSchema = z.object({
     brokenLinkCount: z.number().int().nonnegative(),
     orphanArtifactCount: z.number().int().nonnegative(),
     suggestedConceptCount: z.number().int().nonnegative(),
+    duplicateConceptCandidateCount: z.number().int().nonnegative(),
+    missingArticleCandidateCount: z.number().int().nonnegative(),
+    followUpQuestionCount: z.number().int().nonnegative(),
   }),
   findings: z.array(z.object({
-    kind: z.enum(['stale-artifact', 'missing-provenance', 'missing-artifact', 'broken-artifact-link', 'orphan-artifact', 'suggested-concept']),
+    kind: z.enum([
+      'stale-artifact',
+      'missing-provenance',
+      'missing-artifact',
+      'broken-artifact-link',
+      'orphan-artifact',
+      'suggested-concept',
+      'duplicate-concept-candidate',
+      'missing-article-candidate',
+      'follow-up-question-suggestion',
+    ]),
     severity: z.literal('warn'),
     summary: z.string(),
     artifactPath: z.string().optional(),
     sourceId: z.string().optional(),
     rawInputId: z.string().optional(),
+    relatedArtifactPaths: z.array(z.string()).optional(),
   })),
+  suggestionsArtifactPath: z.string().nullable(),
 });
 
 const workspaceRawInputSearchResultSchema = z.object({
   rawInputId: z.string(),
-  kind: z.enum(['markdown-dir', 'pdf', 'image']),
+  kind: z.enum(['markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl']),
   label: z.string(),
   sectionTitle: z.string(),
   markdown: z.string(),
@@ -962,7 +980,7 @@ registerAiocsTool(
   'workspace_status',
   {
     title: 'Workspace status',
-    description: 'Show workspace metadata, bindings, artifacts, and recent compile runs.',
+    description: 'Show workspace metadata, bindings, artifacts, graph summary, and recent compile runs.',
     inputSchema: z.object({
       workspaceId: z.string(),
     }),
@@ -989,6 +1007,23 @@ registerAiocsTool(
         linkCount: z.number().int().nonnegative(),
         brokenLinkCount: z.number().int().nonnegative(),
         orphanArtifactCount: z.number().int().nonnegative(),
+        backlinkCount: z.number().int().nonnegative(),
+        relationCounts: z.object({
+          explicit_link: z.number().int().nonnegative(),
+          derived_from: z.number().int().nonnegative(),
+          mentions: z.number().int().nonnegative(),
+          related_to: z.number().int().nonnegative(),
+          expands: z.number().int().nonnegative(),
+          index_entry: z.number().int().nonnegative(),
+          summary_of: z.number().int().nonnegative(),
+          concept_of: z.number().int().nonnegative(),
+          output_depends_on: z.number().int().nonnegative(),
+        }),
+        mostLinkedArtifacts: z.array(z.object({
+          artifactPath: z.string(),
+          incomingCount: z.number().int().nonnegative(),
+          outgoingCount: z.number().int().nonnegative(),
+        })),
       }),
       lintSummary: workspaceLintSchema.shape.summary,
       health: workspaceHealthSchema,
@@ -1054,10 +1089,10 @@ registerAiocsTool(
   'workspace_ingest_add',
   {
     title: 'Workspace ingest add',
-    description: 'Ingest a local markdown directory, PDF, or image into a research workspace as raw evidence.',
+    description: 'Ingest a local markdown directory, PDF, image, CSV, JSON, or JSONL file into a research workspace as raw evidence.',
     inputSchema: z.object({
       workspaceId: z.string(),
-      kind: z.enum(['markdown-dir', 'pdf', 'image']),
+      kind: z.enum(['markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl']),
       path: z.string(),
       label: z.string().optional(),
     }),
@@ -1112,11 +1147,11 @@ registerAiocsTool(
   'workspace_ingest_search',
   {
     title: 'Workspace ingest search',
-    description: 'Search workspace-scoped raw input chunks directly.',
+    description: 'Search workspace-scoped raw input chunks directly, including structured dataset inputs.',
     inputSchema: z.object({
       workspaceId: z.string(),
       query: z.string(),
-      kinds: z.array(z.enum(['markdown-dir', 'pdf', 'image'])).optional(),
+      kinds: z.array(z.enum(['markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl'])).optional(),
       limit: z.number().int().positive().optional(),
       offset: z.number().int().nonnegative().optional(),
     }),
@@ -1187,7 +1222,7 @@ registerAiocsTool(
   'workspace_lint',
   {
     title: 'Workspace lint',
-    description: 'Lint a workspace for stale artifacts, missing provenance, and missing expected artifacts.',
+    description: 'Lint a workspace for stale artifacts, graph issues, and deterministic suggestion candidates.',
     inputSchema: z.object({
       workspaceId: z.string(),
     }),

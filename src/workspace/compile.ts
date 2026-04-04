@@ -12,13 +12,13 @@ import {
 import { compileWithLmStudio, LMSTUDIO_SANITIZER_VERSION } from './lmstudio.js';
 import type { WorkspaceArtifactLinkInput, WorkspaceCompilerProfile } from './types.js';
 import {
-  extractWorkspaceLinks,
   getRawInputArtifactBundle,
   getSourceArtifactBundle,
   getWorkspaceIndexPath,
   listWorkspaceOutputArtifactPaths,
 } from './artifacts.js';
 import { resolveEffectiveWorkspaceCompilerProfile } from './compiler-profile.js';
+import { buildArtifactLinks, syncWorkspaceGraphNavigation } from './graph.js';
 
 type Catalog = ReturnType<typeof openCatalog>;
 
@@ -297,22 +297,14 @@ function ensureLeadingTitle(content: string, title: string): string {
   return [`# ${title}`, '', content.trim()].join('\n');
 }
 
-function wrapArtifactContent(content: string, workspaceId: string, relatedPaths: string[]): string {
+function wrapArtifactContent(content: string, workspaceId: string): string {
   const trimmed = content.trim();
-  const links = relatedPaths.length > 0
-    ? [
-        '',
-        '## Workspace Links',
-        ...relatedPaths.map((path) => `- [${path}](${path})`),
-      ].join('\n')
-    : '';
 
   return [
     '<!-- aiocs workspace artifact -->',
     `<!-- workspace: ${workspaceId} -->`,
     '',
     trimmed,
-    links,
     '',
   ].join('\n');
 }
@@ -366,7 +358,6 @@ async function renderSourceArtifacts(input: {
       content: wrapArtifactContent(
         ensureLeadingTitle(summary.content, input.summaryTitle),
         input.workspaceId,
-        ['derived/index.md', input.conceptPath],
       ),
       provenance: input.provenance,
       ...(input.rawInputProvenance ? { rawInputProvenance: input.rawInputProvenance } : {}),
@@ -380,10 +371,10 @@ async function renderSourceArtifacts(input: {
         wrapArtifactContent(
           ensureLeadingTitle(summary.content, input.summaryTitle),
           input.workspaceId,
-          ['derived/index.md', input.conceptPath],
         ),
         [
           { toPath: 'derived/index.md', relationKind: 'related_to', anchorText: 'derived/index.md' },
+          { toPath: input.conceptPath, relationKind: 'mentions', anchorText: input.conceptPath },
           { toPath: input.conceptPath, relationKind: 'summary_of', anchorText: input.conceptPath },
         ],
       ),
@@ -394,7 +385,6 @@ async function renderSourceArtifacts(input: {
       content: wrapArtifactContent(
         ensureLeadingTitle(concepts.content, input.conceptTitle),
         input.workspaceId,
-        ['derived/index.md', input.summaryPath],
       ),
       provenance: input.provenance,
       ...(input.rawInputProvenance ? { rawInputProvenance: input.rawInputProvenance } : {}),
@@ -408,10 +398,10 @@ async function renderSourceArtifacts(input: {
         wrapArtifactContent(
           ensureLeadingTitle(concepts.content, input.conceptTitle),
           input.workspaceId,
-          ['derived/index.md', input.summaryPath],
         ),
         [
           { toPath: 'derived/index.md', relationKind: 'related_to', anchorText: 'derived/index.md' },
+          { toPath: input.summaryPath, relationKind: 'expands', anchorText: input.summaryPath },
           { toPath: input.summaryPath, relationKind: 'concept_of', anchorText: input.summaryPath },
         ],
       ),
@@ -618,40 +608,6 @@ function changedRawInputsFromArtifactPaths(paths: string[]): string[] {
     const conceptMatch = path.match(/^derived\/raw\/([^/]+)\/concept\.md$/);
     return conceptMatch?.[1] ? [conceptMatch[1]] : [];
   }))].sort();
-}
-
-function buildArtifactLinks(
-  fromPath: string,
-  content: string,
-  relationLinks: Array<Omit<WorkspaceArtifactLinkInput, 'fromPath'>> = [],
-): WorkspaceArtifactLinkInput[] {
-  const links: WorkspaceArtifactLinkInput[] = extractWorkspaceLinks(fromPath, content).map((link) => ({
-    fromPath,
-    toPath: link.targetPath,
-    relationKind: 'explicit_link',
-    anchorText: link.anchorText,
-    source: 'deterministic',
-    broken: false,
-  }));
-
-  for (const relation of relationLinks) {
-    links.push({
-      fromPath,
-      ...relation,
-      source: relation.source ?? 'deterministic',
-      broken: relation.broken ?? false,
-    });
-  }
-
-  const deduped = new Map<string, WorkspaceArtifactLinkInput>();
-  for (const link of links) {
-    deduped.set(
-      `${link.fromPath}::${link.toPath}::${link.relationKind}::${link.source ?? 'deterministic'}`,
-      link,
-    );
-  }
-
-  return [...deduped.values()];
 }
 
 export async function compileWorkspace(input: {
@@ -977,6 +933,15 @@ export async function compileWorkspace(input: {
         ...(indexArtifact.links ? { links: indexArtifact.links } : {}),
       });
       updatedArtifactPaths.add(indexArtifact.path);
+    }
+
+    const graphSync = await syncWorkspaceGraphNavigation({
+      catalog: input.catalog,
+      dataDir: input.dataDir,
+      workspaceId: input.workspaceId,
+    });
+    for (const artifactPath of graphSync.updatedArtifactPaths) {
+      updatedArtifactPaths.add(artifactPath);
     }
 
     await writeWorkspaceManifest({

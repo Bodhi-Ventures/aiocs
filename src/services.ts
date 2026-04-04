@@ -22,7 +22,15 @@ import { answerWorkspaceQuestion as answerWorkspaceQuestionRun, generateWorkspac
 import { lintWorkspace as lintWorkspaceRun } from './workspace/lint.js';
 import { analyzeWorkspaceStatus } from './workspace/status.js';
 import { enqueueWorkspaceCompileIfEligible, processQueuedWorkspaceCompileJobs } from './workspace/queue.js';
-import { extractImageInput, extractMarkdownDirectoryInput, extractPdfInput } from './workspace/raw-inputs.js';
+import { syncWorkspaceGraphNavigation } from './workspace/graph.js';
+import {
+  extractCsvInput,
+  extractImageInput,
+  extractJsonInput,
+  extractJsonlInput,
+  extractMarkdownDirectoryInput,
+  extractPdfInput,
+} from './workspace/raw-inputs.js';
 import { deleteWorkspaceArtifact, deleteWorkspaceManifest, deleteWorkspacePath, copyPathIntoWorkspace, readWorkspaceArtifact, writeWorkspaceArtifact } from './workspace/storage.js';
 import { resolveWorkspaceCompilerProfile } from './workspace/compiler-profile.js';
 import { getWorkspaceAnswerPath, getWorkspaceIndexPath } from './workspace/artifacts.js';
@@ -60,7 +68,7 @@ type CatalogContext = {
 const workspaceSearchScopes = new Set<WorkspaceSearchScope>(['source', 'derived', 'mixed']);
 const workspaceOutputFormats = new Set<WorkspaceOutputFormat>(['report', 'slides', 'summary']);
 const workspaceAnswerFormats = new Set<WorkspaceAnswerFormat>(['report', 'slides', 'summary', 'note']);
-const workspaceRawInputKinds = new Set<WorkspaceRawInputKind>(['markdown-dir', 'pdf', 'image']);
+const workspaceRawInputKinds = new Set<WorkspaceRawInputKind>(['markdown-dir', 'pdf', 'image', 'csv', 'json', 'jsonl']);
 
 function createCatalog(): CatalogContext {
   const dataDir = getAiocsDataDir();
@@ -120,7 +128,7 @@ function assertWorkspaceRawInputKind(value: string): WorkspaceRawInputKind {
 
   throw new AiocsError(
     AIOCS_ERROR_CODES.invalidArgument,
-    'workspace raw input kind must be one of: markdown-dir, pdf, image',
+    'workspace raw input kind must be one of: markdown-dir, pdf, image, csv, json, jsonl',
   );
 }
 
@@ -555,6 +563,11 @@ export async function unbindWorkspaceSources(input: {
       workspaceId: input.workspaceId,
       fileName: 'compile-state.json',
     });
+    await syncWorkspaceGraphNavigation({
+      catalog,
+      dataDir,
+      workspaceId: input.workspaceId,
+    });
 
     const workspace = catalog.getWorkspace(input.workspaceId);
     if (workspace?.autoCompileEnabled) {
@@ -866,8 +879,9 @@ export async function showWorkspaceArtifact(workspaceId: string, artifactPath: s
 }
 
 export async function lintWorkspaceArtifacts(workspaceId: string) {
-  return withCatalog(({ catalog }) => lintWorkspaceRun({
+  return withCatalog(({ catalog, dataDir }) => lintWorkspaceRun({
     catalog,
+    dataDir,
     workspaceId,
   }));
 }
@@ -915,7 +929,13 @@ export async function ingestWorkspaceRawInput(input: {
       ? await extractMarkdownDirectoryInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
       : kind === 'pdf'
         ? await extractPdfInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
-        : await extractImageInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) });
+        : kind === 'image'
+          ? await extractImageInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
+          : kind === 'csv'
+            ? await extractCsvInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
+            : kind === 'json'
+              ? await extractJsonInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) })
+              : await extractJsonlInput({ absolutePath: sourcePath, ...(input.label ? { label: input.label } : {}) });
 
     const storagePath = buildWorkspaceRawStoragePath({
       kind,
@@ -1066,6 +1086,11 @@ export async function removeWorkspaceRawInput(input: {
       dataDir,
       workspaceId: input.workspaceId,
       fileName: 'compile-state.json',
+    });
+    await syncWorkspaceGraphNavigation({
+      catalog,
+      dataDir,
+      workspaceId: input.workspaceId,
     });
 
     if (workspace.autoCompileEnabled) {
