@@ -179,7 +179,14 @@ function extractTitleFromMarkdown(markdown: string): string | null {
 
 export async function extractPage(page: Page, strategy: ExtractStrategy): Promise<ExtractedPage> {
   if (strategy.strategy === 'clipboardButton') {
-    return runClipboardStrategy(page, strategy);
+    try {
+      return await runClipboardStrategy(page, strategy);
+    } catch (error) {
+      if (strategy.fallback?.strategy === 'readability') {
+        return runReadabilityStrategy(page);
+      }
+      throw error;
+    }
   }
 
   if (strategy.strategy === 'selector') {

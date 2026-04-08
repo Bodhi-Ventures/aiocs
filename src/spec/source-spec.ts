@@ -35,6 +35,9 @@ const clipboardExtractSchema = z.object({
   strategy: z.literal('clipboardButton'),
   interactions: z.array(interactionSchema).min(1),
   clipboardTimeoutMs: positiveIntSchema.default(10_000),
+  fallback: z.object({
+    strategy: z.literal('readability'),
+  }).optional(),
 });
 
 const selectorExtractSchema = z.object({

@@ -14,6 +14,8 @@ extract:
   interactions:
     - action: click
       selector: button[aria-label="Copy page"]
+  fallback:
+    strategy: readability
 normalize:
   prependSourceComment: true
 schedule:

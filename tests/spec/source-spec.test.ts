@@ -63,6 +63,8 @@ extract:
   interactions:
     - action: click
       selector: button[aria-label="Copy page"]
+  fallback:
+    strategy: readability
 normalize:
   prependSourceComment: true
 schedule:
@@ -76,8 +78,14 @@ schedule:
       if (spec.kind !== 'web') {
         throw new Error('expected a web source spec');
       }
+      if (spec.extract.strategy !== 'clipboardButton') {
+        throw new Error('expected a clipboardButton extract strategy');
+      }
       expect(spec.id).toBe('hyperliquid');
       expect(spec.extract.strategy).toBe('clipboardButton');
+      expect(spec.extract.fallback).toEqual({
+        strategy: 'readability',
+      });
       expect(spec.discovery.maxPages).toBe(250);
       expect(spec.schedule.everyHours).toBe(24);
     } finally {

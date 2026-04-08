@@ -144,6 +144,60 @@ describe('fetchSource', () => {
     }
   });
 
+  it('prefers clipboard extraction and falls back to readability per page when configured', async () => {
+    const server = await startDocsServer();
+    const catalog = openCatalog({ dataDir: root });
+
+    const spec: SourceSpec = {
+      kind: 'web',
+      id: 'clipboard-fallback-source',
+      label: 'Clipboard Fallback Source',
+      startUrls: [`${server.baseUrl}/clipboard-fallback/start`],
+      allowedHosts: ['127.0.0.1'],
+      discovery: {
+        include: [`${server.baseUrl}/clipboard-fallback/**`],
+        exclude: [],
+        maxPages: 10,
+      },
+      extract: {
+        strategy: 'clipboardButton',
+        interactions: [
+          {
+            action: 'click',
+            selector: '#copy-page',
+          },
+        ],
+        clipboardTimeoutMs: 1_500,
+        fallback: {
+          strategy: 'readability',
+        },
+      },
+      normalize: {
+        prependSourceComment: true,
+      },
+      schedule: {
+        everyHours: 24,
+      },
+    };
+
+    try {
+      catalog.upsertSource(spec);
+
+      const result = await fetchSource({ catalog, sourceId: spec.id, dataDir: root });
+
+      expect(result.pageCount).toBe(2);
+      expect(
+        catalog.search({ query: 'Primary page uses clipboard extraction', sourceIds: [spec.id] }).results,
+      ).toHaveLength(1);
+      expect(
+        catalog.search({ query: 'readability fallback should extract it', sourceIds: [spec.id] }).results,
+      ).toHaveLength(1);
+    } finally {
+      await server.close();
+      catalog.close();
+    }
+  });
+
   it('supports authenticated fetches with environment-backed headers and cookies', async () => {
     const server = await startDocsServer();
     const catalog = openCatalog({ dataDir: root });

@@ -213,6 +213,30 @@ function createRoutes(): Record<string, RouteDefinition> {
         });
       `,
     ),
+    '/clipboard-fallback/start': htmlRoute(
+      'Clipboard Fallback Start',
+      `
+        <button id="copy-page">Copy page</button>
+        <a href="/clipboard-fallback/next">Next page</a>
+      `,
+      `
+        window.navigator.clipboard ??= {};
+        document.getElementById('copy-page')?.addEventListener('click', async () => {
+          await navigator.clipboard.writeText('# Clipboard Fallback Start\\n\\nPrimary page uses clipboard extraction.');
+        });
+      `,
+    ),
+    '/clipboard-fallback/next': htmlRoute(
+      'Clipboard Fallback Next',
+      `
+        <main>
+          <article>
+            <h1>Clipboard Fallback Next</h1>
+            <p>This page has no copy control, so readability fallback should extract it.</p>
+          </article>
+        </main>
+      `,
+    ),
     '/clipboard/next': htmlRoute(
       'Clipboard Next',
       `
