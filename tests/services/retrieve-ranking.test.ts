@@ -398,4 +398,79 @@ describe('retrieveContext ranking', () => {
 
     expect(intendedPage).toBeGreaterThan(falsePositive);
   });
+
+  it('does not double-count fused hybrid scores across lexical and vector channels', async () => {
+    const catalog = openCatalog({ dataDir: process.env.AIOCS_DATA_DIR! });
+    catalog.upsertSource(buildSpec('selector'));
+    const snapshot = catalog.recordSuccessfulSnapshot({
+      sourceId: 'selector',
+      pages: [
+        {
+          url: 'https://example.com/docs/api/websocket-overview',
+          title: 'API WebSocket Overview',
+          markdown: '# API WebSocket Overview\n\nBroad websocket overview.',
+        },
+        {
+          url: 'https://example.com/docs/api/websocket-auth',
+          title: 'API WebSocket Auth',
+          markdown: '# API WebSocket Auth\n\nAuthentication details for websocket sessions.',
+        },
+      ],
+    });
+    catalog.close();
+
+    searchHybridCatalogMock.mockResolvedValue({
+      query: 'api websocket',
+      total: 2,
+      limit: 20,
+      offset: 0,
+      hasMore: false,
+      modeRequested: 'hybrid',
+      modeUsed: 'hybrid',
+      results: [
+        {
+          chunkId: 5001,
+          sourceId: 'selector',
+          snapshotId: snapshot.snapshotId,
+          pageUrl: 'https://example.com/docs/api/websocket-overview',
+          pageTitle: 'API WebSocket Overview',
+          sectionTitle: 'API WebSocket Overview (1-3)',
+          markdown: 'Broad websocket overview.',
+          pageKind: 'document',
+          filePath: null,
+          language: null,
+          score: 0.82,
+          signals: ['lexical', 'vector'],
+        },
+        {
+          chunkId: 5002,
+          sourceId: 'selector',
+          snapshotId: snapshot.snapshotId,
+          pageUrl: 'https://example.com/docs/api/websocket-auth',
+          pageTitle: 'API WebSocket Auth',
+          sectionTitle: 'API WebSocket Auth (1-3)',
+          markdown: 'Authentication details for websocket sessions.',
+          pageKind: 'document',
+          filePath: null,
+          language: null,
+          score: 0.79,
+          signals: ['lexical'],
+        },
+      ],
+    });
+
+    const result = await retrieveContext('api websocket', {
+      source: ['selector'],
+      mode: 'hybrid',
+      pageLimit: 1,
+    });
+
+    expect(result.pages).toEqual([
+      expect.objectContaining({
+        sourceId: 'selector',
+        url: 'https://example.com/docs/api/websocket-auth',
+        title: 'API WebSocket Auth',
+      }),
+    ]);
+  });
 });

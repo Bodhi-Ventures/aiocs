@@ -756,11 +756,13 @@ export async function retrieveContext(query: string, options: SearchOptions & { 
         bestVectorScore: 0,
         sectionTitles: new Set<string>(),
       };
+      const signalCount = Math.max(1, result.signals.length);
+      const perSignalScore = result.score / signalCount;
       if (result.signals.includes('lexical')) {
-        record.bestLexicalScore = Math.max(record.bestLexicalScore, result.score);
+        record.bestLexicalScore = Math.max(record.bestLexicalScore, perSignalScore);
       }
       if (result.signals.includes('vector')) {
-        record.bestVectorScore = Math.max(record.bestVectorScore, result.score);
+        record.bestVectorScore = Math.max(record.bestVectorScore, perSignalScore);
       }
       record.sectionTitles.add(result.sectionTitle);
       searchPageSignals.set(key, record);
