@@ -20,6 +20,7 @@ import {
   AIOCS_ERROR_CODES,
 } from './errors.js';
 import {
+  describeSource,
   backfillEmbeddings,
   clearEmbeddings,
   diffSnapshotsForSource,
@@ -30,18 +31,25 @@ import {
   getDoctorReport,
   initManagedSources,
   linkProjectSources,
+  listRoutingLearningsForQuery,
+  listSourcePages,
   listSnapshotsForSource,
   listSources,
+  retrieveContext,
   runSourceCanaries,
   runEmbeddingWorker,
+  saveRoutingLearning,
   searchCatalog,
+  showPage,
   showChunk,
+  upsertSourceContextFromFile,
   type SearchOptions,
   unlinkProjectSources,
   upsertSourceFromSpecFile,
   verifyCoverage,
   refreshDueSources,
   getManagedSourceSpecDirectories,
+  getSourceContextForSource,
 } from './services.js';
 
 type CommandResult<TData> = {
@@ -75,6 +83,30 @@ function renderSearchResult(result: {
     `Page: ${result.pageTitle}`,
     `Section: ${result.sectionTitle}`,
     `URL: ${result.pageUrl}`,
+    '',
+    result.markdown,
+    '',
+  ].join('\n');
+}
+
+function renderPageResult(result: {
+  sourceId: string;
+  snapshotId: string;
+  url: string;
+  title: string;
+  markdown: string;
+  pageKind?: 'document' | 'file';
+  filePath?: string | null;
+  language?: string | null;
+}): string {
+  return [
+    `Source: ${result.sourceId}`,
+    `Snapshot: ${result.snapshotId}`,
+    ...(result.pageKind ? [`Kind: ${result.pageKind}`] : []),
+    ...(result.filePath ? [`Path: ${result.filePath}`] : []),
+    ...(result.language ? [`Language: ${result.language}`] : []),
+    `Page: ${result.title}`,
+    `URL: ${result.url}`,
     '',
     result.markdown,
     '',
@@ -367,6 +399,85 @@ source
     });
   });
 
+source
+  .command('describe')
+  .argument('<source-id>')
+  .action(async (sourceId: string, _options: Record<string, never>, command: Command) => {
+    await executeCommand(command, 'source.describe', async () => {
+      const result = await describeSource(sourceId);
+      return {
+        data: result,
+        human: [
+          `${result.source.id} | ${result.source.kind} | ${result.source.label}`,
+          `Spec ${result.source.specPath ?? '(inline/unknown)'}`,
+          result.latestSnapshot
+            ? `Latest ${result.latestSnapshot.snapshotId} | pages=${result.latestSnapshot.pageCount} | created=${result.latestSnapshot.createdAt}`
+            : 'No successful snapshots',
+          ...(result.context.context
+            ? [
+                ...(result.context.context.purpose ? [`Purpose: ${result.context.context.purpose}`] : []),
+                ...(result.context.context.summary ? [`Summary: ${result.context.context.summary}`] : []),
+                ...(result.context.context.topicHints.length > 0
+                  ? [`Topics: ${result.context.context.topicHints.join(', ')}`]
+                  : []),
+                ...(result.context.context.commonLocations.length > 0
+                  ? [
+                      'Common locations:',
+                      ...result.context.context.commonLocations.map((location) =>
+                        `- ${location.label} | ${location.filePath ?? location.url ?? '(unknown)'}${location.note ? ` | ${location.note}` : ''}`),
+                    ]
+                  : []),
+              ]
+            : ['No curated source context']),
+          ...(result.recentLearnings.length > 0
+            ? [
+                'Recent learnings:',
+                ...result.recentLearnings.map((learning) =>
+                  `- ${learning.learningType} | ${learning.intent} | ${learning.filePath ?? learning.pageUrl ?? '(no target)'}`),
+              ]
+            : ['No routing learnings']),
+        ],
+      };
+    });
+  });
+
+const sourceContext = source.command('context');
+sourceContext
+  .command('show')
+  .argument('<source-id>')
+  .action(async (sourceId: string, _options: Record<string, never>, command: Command) => {
+    await executeCommand(command, 'source.context.show', async () => {
+      const result = await getSourceContextForSource(sourceId);
+      return {
+        data: result,
+        human: result.context
+          ? [
+              `Context for ${sourceId}`,
+              ...(result.context.purpose ? [`Purpose: ${result.context.purpose}`] : []),
+              ...(result.context.summary ? [`Summary: ${result.context.summary}`] : []),
+              ...(result.context.topicHints.length > 0 ? [`Topics: ${result.context.topicHints.join(', ')}`] : []),
+              ...(result.context.authNotes.length > 0 ? ['Auth notes:', ...result.context.authNotes.map((item) => `- ${item}`)] : []),
+              ...(result.context.gotchas.length > 0 ? ['Gotchas:', ...result.context.gotchas.map((item) => `- ${item}`)] : []),
+            ]
+          : `No curated source context for ${sourceId}`,
+      };
+    });
+  });
+
+sourceContext
+  .command('upsert')
+  .argument('<source-id>')
+  .argument('<context-file>')
+  .action(async (sourceId: string, contextFile: string, _options: Record<string, never>, command: Command) => {
+    await executeCommand(command, 'source.context.upsert', async () => {
+      const result = await upsertSourceContextFromFile(sourceId, contextFile);
+      return {
+        data: result,
+        human: `Updated source context for ${result.sourceId}`,
+      };
+    });
+  });
+
 program
   .command('fetch')
   .argument('<source-id-or-all>')
@@ -445,6 +556,75 @@ snapshot
             `Snapshots for ${sourceId}:`,
             ...snapshots.map((item) => `${item.snapshotId} | pages=${item.pageCount} | created=${item.createdAt}`),
           ],
+      };
+    });
+  });
+
+const page = program.command('page');
+page
+  .command('list')
+  .argument('<source-id>')
+  .option('--snapshot <snapshot-id>', 'list pages from a specific snapshot')
+  .option('--query <text>', 'filter pages by title, url, or file path')
+  .option('--path <glob>', 'restrict pages to file paths matching a glob', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--limit <count>', 'maximum number of pages to return')
+  .option('--offset <count>', 'number of pages to skip before returning results')
+  .action(async (
+    sourceId: string,
+    options: { snapshot?: string; query?: string; path?: string[]; limit?: string; offset?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'page.list', async () => {
+      const limit = parsePositiveIntegerOption(options.limit, 'limit');
+      const offset = parsePositiveIntegerOption(options.offset, 'offset');
+      const result = await listSourcePages(sourceId, {
+        ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+        ...(options.query ? { query: options.query } : {}),
+        ...(options.path && options.path.length > 0 ? { path: options.path } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+        ...(typeof offset === 'number' ? { offset } : {}),
+      });
+      return {
+        data: result,
+        human: result.pages.length === 0
+          ? `No pages for ${sourceId}`
+          : [
+              `Showing ${result.offset + 1}-${result.offset + result.pages.length} of ${result.total} page(s) for ${sourceId}`,
+              ...result.pages.map((entry) =>
+                `${entry.title} | ${entry.filePath ?? entry.url} | kind=${entry.pageKind} | chars=${entry.markdownLength}`),
+            ],
+      };
+    });
+  });
+
+page
+  .command('show')
+  .argument('<source-id>')
+  .option('--snapshot <snapshot-id>', 'read from a specific snapshot')
+  .option('--url <page-url>', 'read a page by URL')
+  .option('--path <file-path>', 'read a file-backed page by file path')
+  .action(async (
+    sourceId: string,
+    options: { snapshot?: string; url?: string; path?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'page.show', async () => {
+      const result = await showPage({
+        sourceId,
+        ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
+        ...(options.url ? { url: options.url } : {}),
+        ...(options.path ? { filePath: options.path } : {}),
+      });
+      return {
+        data: result,
+        human: renderPageResult({
+          sourceId: result.sourceId,
+          snapshotId: result.snapshotId,
+          ...result.page,
+        }),
       };
     });
   });
@@ -625,6 +805,157 @@ embeddings
             `Embedded ${job.sourceId} -> ${job.snapshotId} (${job.chunkCount} chunks)`),
           ...result.failedJobs.map((job) =>
             `Embedding failed ${job.sourceId} -> ${job.snapshotId}: ${job.errorMessage}`),
+        ],
+      };
+    });
+  });
+
+const learning = program.command('learning');
+learning
+  .command('save')
+  .requiredOption('--source <source-id>', 'source to attach the learning to')
+  .requiredOption('--kind <discovery|negative>', 'learning type')
+  .requiredOption('--intent <text>', 'intent or question pattern this learning applies to')
+  .option('--snapshot <snapshot-id>', 'snapshot associated with the learning')
+  .option('--page-url <page-url>', 'page URL associated with the learning')
+  .option('--file-path <file-path>', 'file-backed page path associated with the learning')
+  .option('--title <title>', 'page title or short label')
+  .option('--note <text>', 'additional note')
+  .option('--search-term <term>', 'search term that worked (or failed)', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .action(async (
+    options: {
+      source: string;
+      kind: 'discovery' | 'negative';
+      intent: string;
+      snapshot?: string;
+      pageUrl?: string;
+      filePath?: string;
+      title?: string;
+      note?: string;
+      searchTerm?: string[];
+    },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'learning.save', async () => {
+      if (options.kind !== 'discovery' && options.kind !== 'negative') {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.invalidArgument,
+          'kind must be discovery or negative',
+        );
+      }
+
+      const result = await saveRoutingLearning({
+        sourceId: options.source,
+        learningType: options.kind,
+        intent: options.intent,
+        ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
+        ...(options.pageUrl ? { pageUrl: options.pageUrl } : {}),
+        ...(options.filePath ? { filePath: options.filePath } : {}),
+        ...(options.title ? { title: options.title } : {}),
+        ...(options.note ? { note: options.note } : {}),
+        ...(options.searchTerm && options.searchTerm.length > 0 ? { searchTerms: options.searchTerm } : {}),
+      });
+      return {
+        data: result,
+        human: `Saved ${result.learning.learningType} learning for ${result.learning.sourceId}`,
+      };
+    });
+  });
+
+learning
+  .command('list')
+  .option('--source <source-id>', 'filter by source id')
+  .option('--kind <discovery|negative>', 'filter by learning type')
+  .option('--intent <text>', 'filter by intent substring')
+  .option('--limit <count>', 'maximum number of learnings to return')
+  .action(async (
+    options: { source?: string; kind?: 'discovery' | 'negative'; intent?: string; limit?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'learning.list', async () => {
+      const limit = parsePositiveIntegerOption(options.limit, 'limit');
+      if (options.kind && options.kind !== 'discovery' && options.kind !== 'negative') {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.invalidArgument,
+          'kind must be discovery or negative',
+        );
+      }
+      const result = await listRoutingLearningsForQuery({
+        ...(options.source ? { sourceId: options.source } : {}),
+        ...(options.kind ? { learningType: options.kind } : {}),
+        ...(options.intent ? { intentQuery: options.intent } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+      });
+      return {
+        data: result,
+        human: result.learnings.length === 0
+          ? 'No learnings recorded.'
+          : result.learnings.map((entry) =>
+              `${entry.learningType} | ${entry.sourceId} | ${entry.intent} | ${entry.filePath ?? entry.pageUrl ?? '(no target)'}`),
+      };
+    });
+  });
+
+program
+  .command('retrieve')
+  .argument('<query>')
+  .option('--source <source-id>', 'restrict retrieval to a source', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--snapshot <snapshot-id>', 'retrieve from a specific snapshot')
+  .option('--all', 'retrieve across all latest snapshots')
+  .option('--project <path>', 'resolve retrieval scope as if running from this path')
+  .option('--path <glob>', 'restrict retrieval to file paths matching a glob', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--language <name>', 'restrict retrieval to a language', (value, current: string[]) => {
+    current.push(value);
+    return current;
+  }, [])
+  .option('--mode <mode>', 'search mode: auto, lexical, hybrid, semantic')
+  .option('--limit <count>', 'maximum number of search results to shortlist')
+  .option('--offset <count>', 'number of search results to skip before shortlisting')
+  .option('--page-limit <count>', 'maximum number of full pages to read into context')
+  .action(async (
+    query: string,
+    options: SearchOptions & { limit?: string; offset?: string; mode?: string; path?: string[]; language?: string[]; pageLimit?: string },
+    command: Command,
+  ) => {
+    await executeCommand(command, 'retrieve', async () => {
+      const limit = parsePositiveIntegerOption(options.limit, 'limit');
+      const offset = parsePositiveIntegerOption(options.offset, 'offset');
+      const pageLimit = parsePositiveIntegerOption(options.pageLimit, 'limit');
+      const mode = parseSearchModeOption(options.mode);
+      const result = await retrieveContext(query, {
+        source: options.source,
+        ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+        ...(typeof options.all !== 'undefined' ? { all: options.all } : {}),
+        ...(options.project ? { project: options.project } : {}),
+        ...(options.path && options.path.length > 0 ? { path: options.path } : {}),
+        ...(options.language && options.language.length > 0 ? { language: options.language } : {}),
+        ...(mode ? { mode } : {}),
+        ...(typeof limit === 'number' ? { limit } : {}),
+        ...(typeof offset === 'number' ? { offset } : {}),
+        ...(typeof pageLimit === 'number' ? { pageLimit } : {}),
+      });
+      return {
+        data: result,
+        human: [
+          `Retrieval for "${query}" | mode=${result.modeUsed} | sources=${result.sourceScope.join(', ') || '(none)'}`,
+          ...(result.sourceHints.length > 0
+            ? ['Source hints:', ...result.sourceHints.map((hint) => `- ${hint.sourceId} | score=${hint.score} | ${hint.context.summary ?? hint.context.purpose ?? 'context'}`)]
+            : []),
+          ...(result.matchedLearnings.length > 0
+            ? ['Matched learnings:', ...result.matchedLearnings.map((learning) => `- ${learning.sourceId} | ${learning.intent} | score=${learning.score}`)]
+            : []),
+          ...(result.pages.length > 0
+            ? ['Full pages read:', ...result.pages.map((page) => `${page.sourceId} | ${page.filePath ?? page.url} | ${page.title}`)]
+            : ['No full pages selected']),
         ],
       };
     });

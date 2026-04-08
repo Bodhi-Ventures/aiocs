@@ -13,6 +13,8 @@ Use this skill when you need to add, refresh, repair, or otherwise mutate `aiocs
 - An existing source is stale and should be refreshed instead of bypassed.
 - A source spec needs to be created, updated, or upserted under `~/.aiocs/sources`.
 - A reusable external git repository should be added as a `kind: git` source under `~/.aiocs/sources`.
+- A source should gain curated metadata such as purpose, topic hints, common locations, gotchas, or auth notes.
+- A durable routing hint should be saved because a discovery or failed path will help future retrieval.
 - A canary is failing and the source needs remediation or targeted refetch.
 - The user explicitly wants `aiocs` maintenance, source onboarding, or catalog repair.
 
@@ -59,6 +61,12 @@ mkdir -p ~/.aiocs/sources
 aiocs --json source upsert ~/.aiocs/sources/my-source.yaml
 ```
 
+Add or update curated source context:
+
+```bash
+aiocs --json source context upsert my-source ~/.aiocs/source-context/my-source.yaml
+```
+
 Refresh only what is needed:
 
 ```bash
@@ -67,6 +75,13 @@ aiocs --json refresh due hyperliquid
 aiocs --json refresh due nktkas-hyperliquid
 aiocs --json fetch my-source
 aiocs --json canary my-source
+```
+
+Persist durable routing learnings when they will help future retrieval:
+
+```bash
+aiocs --json learning save --source my-source --kind discovery --intent "where is auth documented" --page-url "https://..."
+aiocs --json learning save --source my-source --kind negative --intent "where is auth documented" --page-url "https://..." --note "Overview page is not enough."
 ```
 
 Heavy maintenance remains explicit:
@@ -84,9 +99,11 @@ The `aiocs-mcp` server exposes the same curation operations without shell parsin
 - `doctor`
 - `source_list`
 - `source_upsert`
+- `source_context_upsert`
 - `canary`
 - `fetch`
 - `refresh_due`
+- `learning_save`
 - `embeddings_status`
 - `embeddings_backfill`
 - `embeddings_clear`
@@ -98,13 +115,17 @@ The `aiocs-mcp` server exposes the same curation operations without shell parsin
 1. Run `doctor` or `source_list` if runtime health, presence, or freshness is unclear.
 2. If the source already exists and is due, prefer `refresh due <source-id>`.
 3. If the source is missing but worth curating, create a spec under `~/.aiocs/sources`, then `source_upsert` it.
-4. After upsert, use `refresh due <source-id>` as the safe first fetch path.
-5. Use `canary` when the site changed or extraction drift is suspected.
-6. Escalate to `fetch <source-id>` or `fetch all` only for explicit maintenance or when due-based refresh is not enough.
+4. If source-level context will help future retrieval, upsert a curated source-context file.
+5. After upsert, use `refresh due <source-id>` as the safe first fetch path.
+6. Use `canary` when the site changed or extraction drift is suspected.
+7. Save routing learnings only when the discovery is durable enough to help future runs.
+8. Escalate to `fetch <source-id>` or `fetch all` only for explicit maintenance or when due-based refresh is not enough.
 
 ## Operational notes
 
 - New or changed sources become due immediately after `source_upsert`.
+- `source context upsert` is the right place for durable source-level guidance; do not overload source specs with retrieval notes.
+- `learning save` is for durable routing memory, not one-off scratch notes.
 - `~/.aiocs/sources` and bundled repo sources behave the same once bootstrapped into the catalog.
 - Targeted refresh is the default. Broad refresh is a maintenance task, not a normal answering step.
 - Use `aiocs` for read/search flows and this skill only for catalog mutation.

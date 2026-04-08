@@ -44,6 +44,24 @@ function seedUserManagedSourceSpecs(userSourceDir: string) {
   writeSourceSpec(join(userSourceDir, 'synthetix.yaml'), 'synthetix', 'Synthetix Docs');
 }
 
+function writeSourceContextFile(contextPath: string, baseUrl: string) {
+  writeFileSync(contextPath, `
+purpose: Selector docs for trading workflows
+summary: Use these pages for maker-flow and auth style docs lookups.
+topicHints:
+  - maker flow
+  - authentication
+commonLocations:
+  - label: Maker flow entry
+    url: ${baseUrl}/selector/start
+    note: Starts the selector documentation flow.
+gotchas:
+  - Read the full page before answering from isolated chunks.
+authNotes:
+  - Check the auth page first when the question is about API setup.
+`);
+}
+
 function stringEnv(extra: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries({
@@ -78,6 +96,7 @@ describe('mcp server', () => {
   it('serves the shared aiocs operations over stdio MCP', async () => {
     const docsServer = await startDocsServer();
     const specPath = join(root, 'mcp-selector.yaml');
+    const contextPath = join(root, 'mcp-selector-context.yaml');
     const projectPath = join(root, 'workspace', 'desk');
     const userSourceDir = join(root, 'user-sources');
     mkdirSync(projectPath, { recursive: true });
@@ -103,6 +122,7 @@ normalize:
 schedule:
   everyHours: 24
 `);
+    writeSourceContextFile(contextPath, docsServer.baseUrl);
 
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -135,15 +155,23 @@ schedule:
         'init',
         'source_upsert',
         'source_list',
+        'source_describe',
+        'source_context_show',
+        'source_context_upsert',
         'fetch',
         'canary',
         'refresh_due',
         'snapshot_list',
         'diff_snapshots',
+        'page_list',
+        'page_show',
         'project_link',
         'project_unlink',
         'search',
+        'retrieve_context',
         'show',
+        'learning_save',
+        'learning_list',
         'backup_export',
         'backup_import',
         'verify_coverage',
@@ -200,6 +228,18 @@ schedule:
         sourceId: 'mcp-selector',
       });
 
+      const contextUpsert = await client.callTool({
+        name: 'source_context_upsert',
+        arguments: {
+          sourceId: 'mcp-selector',
+          contextFile: contextPath,
+        },
+      });
+      expect(toolData<{ sourceId: string; contextFile: string }>(contextUpsert)).toMatchObject({
+        sourceId: 'mcp-selector',
+        contextFile: contextPath,
+      });
+
       const sourceList = await client.callTool({
         name: 'source_list',
         arguments: {},
@@ -220,6 +260,48 @@ schedule:
             isCanaryDue: true,
           }),
         ]),
+      });
+
+      const sourceDescribe = await client.callTool({
+        name: 'source_describe',
+        arguments: {
+          sourceId: 'mcp-selector',
+        },
+      });
+      expect(toolData<{
+        source: { id: string };
+        context: { context: { topicHints: string[] } | null };
+        recentLearnings: Array<unknown>;
+      }>(sourceDescribe)).toMatchObject({
+        source: {
+          id: 'mcp-selector',
+        },
+        context: {
+          context: {
+            topicHints: expect.arrayContaining(['maker flow']),
+          },
+        },
+        recentLearnings: [],
+      });
+
+      const sourceContextShow = await client.callTool({
+        name: 'source_context_show',
+        arguments: {
+          sourceId: 'mcp-selector',
+        },
+      });
+      expect(toolData<{
+        sourceId: string;
+        context: { commonLocations: Array<{ url?: string }> } | null;
+      }>(sourceContextShow)).toMatchObject({
+        sourceId: 'mcp-selector',
+        context: {
+          commonLocations: [
+            expect.objectContaining({
+              url: `${docsServer.baseUrl}/selector/start`,
+            }),
+          ],
+        },
       });
 
       const link = await client.callTool({
@@ -259,6 +341,90 @@ schedule:
         results: [],
       });
 
+      const pageList = await client.callTool({
+        name: 'page_list',
+        arguments: {
+          sourceId: 'mcp-selector',
+          query: 'selector',
+          limit: 10,
+          offset: 0,
+        },
+      });
+      expect(toolData<{
+        sourceId: string;
+        total: number;
+        pages: Array<{ url: string; title: string }>;
+      }>(pageList)).toMatchObject({
+        sourceId: 'mcp-selector',
+        total: 2,
+        pages: expect.arrayContaining([
+          expect.objectContaining({
+            url: `${docsServer.baseUrl}/selector/start`,
+            title: 'Selector Start',
+          }),
+        ]),
+      });
+
+      const pageShow = await client.callTool({
+        name: 'page_show',
+        arguments: {
+          sourceId: 'mcp-selector',
+          url: `${docsServer.baseUrl}/selector/start`,
+        },
+      });
+      expect(toolData<{
+        sourceId: string;
+        page: { markdown: string; title: string };
+      }>(pageShow)).toMatchObject({
+        sourceId: 'mcp-selector',
+        page: {
+          title: 'Selector Start',
+          markdown: expect.stringContaining('Maker flow documentation starts here.'),
+        },
+      });
+
+      const learningSave = await client.callTool({
+        name: 'learning_save',
+        arguments: {
+          sourceId: 'mcp-selector',
+          learningType: 'discovery',
+          intent: 'maker flow',
+          pageUrl: `${docsServer.baseUrl}/selector/start`,
+          title: 'Selector Start',
+          note: 'Start here for maker flow questions.',
+          searchTerms: ['maker flow', 'selector'],
+        },
+      });
+      expect(toolData<{
+        learning: { sourceId: string; learningType: string; intent: string };
+      }>(learningSave)).toMatchObject({
+        learning: {
+          sourceId: 'mcp-selector',
+          learningType: 'discovery',
+          intent: 'maker flow',
+        },
+      });
+
+      const learningList = await client.callTool({
+        name: 'learning_list',
+        arguments: {
+          sourceId: 'mcp-selector',
+          intentQuery: 'maker',
+          limit: 5,
+        },
+      });
+      expect(toolData<{
+        learnings: Array<{ sourceId: string; pageUrl: string | null; intent: string }>;
+      }>(learningList)).toMatchObject({
+        learnings: [
+          expect.objectContaining({
+            sourceId: 'mcp-selector',
+            pageUrl: `${docsServer.baseUrl}/selector/start`,
+            intent: 'maker flow',
+          }),
+        ],
+      });
+
       const search = await client.callTool({
         name: 'search',
         arguments: {
@@ -281,6 +447,44 @@ schedule:
       expect(searchData.hasMore).toBe(true);
       expect(searchData.results[0]).toMatchObject({
         sourceId: 'mcp-selector',
+      });
+
+      const retrieveContextResult = await client.callTool({
+        name: 'retrieve_context',
+        arguments: {
+          query: 'maker flow',
+          project: projectPath,
+          pageLimit: 2,
+          limit: 5,
+          offset: 0,
+          mode: 'lexical',
+        },
+      });
+      expect(toolData<{
+        sourceScope: string[];
+        sourceHints: Array<{ sourceId: string }>;
+        matchedLearnings: Array<{ sourceId: string; intent: string }>;
+        pages: Array<{ sourceId: string; url: string; markdown: string }>;
+      }>(retrieveContextResult)).toMatchObject({
+        sourceScope: ['mcp-selector'],
+        sourceHints: [
+          expect.objectContaining({
+            sourceId: 'mcp-selector',
+          }),
+        ],
+        matchedLearnings: [
+          expect.objectContaining({
+            sourceId: 'mcp-selector',
+            intent: 'maker flow',
+          }),
+        ],
+        pages: [
+          expect.objectContaining({
+            sourceId: 'mcp-selector',
+            url: `${docsServer.baseUrl}/selector/start`,
+            markdown: expect.stringContaining('Maker flow documentation starts here.'),
+          }),
+        ],
       });
 
       const show = await client.callTool({

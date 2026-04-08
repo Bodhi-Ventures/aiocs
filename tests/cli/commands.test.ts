@@ -44,6 +44,24 @@ function seedUserManagedSourceSpecs(userSourceDir: string) {
   writeSourceSpec(join(userSourceDir, 'synthetix.yaml'), 'synthetix', 'Synthetix Docs');
 }
 
+function writeSourceContextFile(contextPath: string, baseUrl: string) {
+  writeFileSync(contextPath, `
+purpose: Selector docs for trading workflows
+summary: Use these pages for maker-flow and auth style docs lookups.
+topicHints:
+  - maker flow
+  - authentication
+commonLocations:
+  - label: Maker flow entry
+    url: ${baseUrl}/selector/start
+    note: Starts the selector documentation flow.
+gotchas:
+  - Read the full page before answering from isolated chunks.
+authNotes:
+  - Check the auth page first when the question is about API setup.
+`);
+}
+
 async function runCli(
   runtime: 'tsx' | 'dist',
   args: string[],
@@ -206,6 +224,7 @@ describe('CLI commands', () => {
     async (runtime) => {
     const server = await startDocsServer();
     const specPath = join(root, 'selector-source.yaml');
+    const contextPath = join(root, 'selector-context.yaml');
     const projectPath = join(root, 'workspace', 'trader');
     const nestedProjectCwd = join(projectPath, 'apps', 'worker');
     mkdirSync(nestedProjectCwd, { recursive: true });
@@ -230,6 +249,7 @@ normalize:
 schedule:
   everyHours: 24
 `);
+    writeSourceContextFile(contextPath, server.baseUrl);
 
     const env = {
       ...process.env,
@@ -246,6 +266,10 @@ schedule:
       expect(sourceList.exitCode).toBe(0);
       expect(sourceList.stdout).toContain('selector-cli');
 
+      const contextUpsert = await runCli(runtime, ['source', 'context', 'upsert', 'selector-cli', contextPath], { cwd: root, env });
+      expect(contextUpsert.exitCode).toBe(0);
+      expect(contextUpsert.stdout).toContain('selector-cli');
+
       const fetch = await runCli(runtime, ['fetch', 'selector-cli'], { cwd: root, env });
       expect(fetch.exitCode).toBe(0);
       expect(fetch.stdout).toContain('Fetched selector-cli');
@@ -261,6 +285,19 @@ schedule:
       expect(snapshots.exitCode).toBe(0);
       expect(snapshots.stdout).toContain('selector-cli');
 
+      const sourceDescribe = await runCli(runtime, ['source', 'describe', 'selector-cli'], { cwd: root, env });
+      expect(sourceDescribe.exitCode).toBe(0);
+      expect(sourceDescribe.stdout).toContain('Selector CLI');
+      expect(sourceDescribe.stdout).toContain('maker-flow');
+
+      const pageList = await runCli(runtime, ['page', 'list', 'selector-cli', '--query', 'next'], { cwd: root, env });
+      expect(pageList.exitCode).toBe(0);
+      expect(pageList.stdout).toContain('Selector Next');
+
+      const pageShow = await runCli(runtime, ['page', 'show', 'selector-cli', '--url', `${server.baseUrl}/selector/start`], { cwd: root, env });
+      expect(pageShow.exitCode).toBe(0);
+      expect(pageShow.stdout).toContain('Maker flow documentation starts here.');
+
       const search = await runCli(runtime, ['search', 'maker flow'], {
         cwd: nestedProjectCwd,
         env,
@@ -275,6 +312,38 @@ schedule:
       const show = await runCli(runtime, ['show', chunkId as string], { cwd: root, env });
       expect(show.exitCode).toBe(0);
       expect(show.stdout).toContain('Maker flow documentation starts here.');
+
+      const learningSave = await runCli(runtime, [
+        'learning',
+        'save',
+        '--source',
+        'selector-cli',
+        '--kind',
+        'discovery',
+        '--intent',
+        'where is maker flow documented',
+        '--page-url',
+        `${server.baseUrl}/selector/start`,
+        '--title',
+        'Selector Start',
+        '--search-term',
+        'maker flow',
+      ], { cwd: root, env });
+      expect(learningSave.exitCode).toBe(0);
+      expect(learningSave.stdout).toContain('Saved discovery learning');
+
+      const learningList = await runCli(runtime, ['learning', 'list', '--source', 'selector-cli'], { cwd: root, env });
+      expect(learningList.exitCode).toBe(0);
+      expect(learningList.stdout).toContain('where is maker flow documented');
+
+      const retrieve = await runCli(runtime, ['retrieve', 'where is maker flow documented', '--project', projectPath, '--mode', 'lexical', '--page-limit', '2'], {
+        cwd: root,
+        env,
+      });
+      expect(retrieve.exitCode).toBe(0);
+      expect(retrieve.stdout).toContain('Matched learnings:');
+      expect(retrieve.stdout).toContain('Full pages read:');
+      expect(retrieve.stdout).toContain('Selector Start');
 
       const unlink = await runCli(runtime, ['project', 'unlink', projectPath, 'selector-cli'], { cwd: root, env });
       expect(unlink.exitCode).toBe(0);
@@ -297,6 +366,7 @@ schedule:
     async (runtime) => {
       const server = await startDocsServer();
       const specPath = join(root, 'selector-source.yaml');
+      const contextPath = join(root, 'selector-context.yaml');
       const projectPath = join(root, 'workspace', 'trader');
       const nestedProjectCwd = join(projectPath, 'apps', 'worker');
       mkdirSync(nestedProjectCwd, { recursive: true });
@@ -321,6 +391,7 @@ normalize:
 schedule:
   everyHours: 24
 `);
+      writeSourceContextFile(contextPath, server.baseUrl);
 
       const env = {
         ...process.env,
@@ -357,6 +428,20 @@ schedule:
         },
       });
 
+        const contextUpsert = await runCli(runtime, ['--json', 'source', 'context', 'upsert', 'selector-json', contextPath], { cwd: root, env });
+        expect(contextUpsert.exitCode).toBe(0);
+        expect(parseJsonEnvelope(contextUpsert.stdout)).toMatchObject({
+          ok: true,
+          command: 'source.context.upsert',
+          data: {
+            sourceId: 'selector-json',
+            contextFile: contextPath,
+            context: expect.objectContaining({
+              summary: expect.stringContaining('maker-flow'),
+            }),
+          },
+        });
+
         const refreshDue = await runCli(runtime, ['--json', 'refresh', 'due', 'selector-json'], { cwd: root, env });
         expect(refreshDue.exitCode).toBe(0);
         expect(parseJsonEnvelope(refreshDue.stdout)).toMatchObject({
@@ -390,6 +475,51 @@ schedule:
           data: {
             projectPath,
             sourceIds: ['selector-json'],
+          },
+        });
+
+        const describe = await runCli(runtime, ['--json', 'source', 'describe', 'selector-json'], { cwd: root, env });
+        expect(describe.exitCode).toBe(0);
+        expect(parseJsonEnvelope(describe.stdout)).toMatchObject({
+          ok: true,
+          command: 'source.describe',
+          data: {
+            source: expect.objectContaining({
+              id: 'selector-json',
+            }),
+            context: expect.objectContaining({
+              context: expect.objectContaining({
+                summary: expect.stringContaining('maker-flow'),
+              }),
+            }),
+          },
+        });
+
+        const pageList = await runCli(runtime, ['--json', 'page', 'list', 'selector-json', '--query', 'next'], { cwd: root, env });
+        expect(pageList.exitCode).toBe(0);
+        expect(parseJsonEnvelope(pageList.stdout)).toMatchObject({
+          ok: true,
+          command: 'page.list',
+          data: {
+            sourceId: 'selector-json',
+            total: 1,
+            pages: [
+              expect.objectContaining({
+                title: 'Selector Next',
+              }),
+            ],
+          },
+        });
+
+        const pageShow = await runCli(runtime, ['--json', 'page', 'show', 'selector-json', '--url', `${server.baseUrl}/selector/start`], { cwd: root, env });
+        expect(pageShow.exitCode).toBe(0);
+        expect(parseJsonEnvelope(pageShow.stdout)).toMatchObject({
+          ok: true,
+          command: 'page.show',
+          data: {
+            page: expect.objectContaining({
+              markdown: expect.stringContaining('Maker flow documentation starts here.'),
+            }),
           },
         });
 
@@ -436,6 +566,76 @@ schedule:
               sourceId: 'selector-json',
               markdown: expect.stringContaining('Maker flow documentation starts here.'),
             }),
+          },
+        });
+
+        const learningSave = await runCli(runtime, [
+          '--json',
+          'learning',
+          'save',
+          '--source',
+          'selector-json',
+          '--kind',
+          'discovery',
+          '--intent',
+          'where is maker flow documented',
+          '--page-url',
+          `${server.baseUrl}/selector/start`,
+          '--title',
+          'Selector Start',
+          '--search-term',
+          'maker flow',
+        ], { cwd: root, env });
+        expect(learningSave.exitCode).toBe(0);
+        expect(parseJsonEnvelope(learningSave.stdout)).toMatchObject({
+          ok: true,
+          command: 'learning.save',
+          data: {
+            learning: expect.objectContaining({
+              sourceId: 'selector-json',
+              learningType: 'discovery',
+            }),
+          },
+        });
+
+        const learningList = await runCli(runtime, ['--json', 'learning', 'list', '--source', 'selector-json'], { cwd: root, env });
+        expect(learningList.exitCode).toBe(0);
+        expect(parseJsonEnvelope(learningList.stdout)).toMatchObject({
+          ok: true,
+          command: 'learning.list',
+          data: {
+            learnings: [
+              expect.objectContaining({
+                sourceId: 'selector-json',
+                intent: 'where is maker flow documented',
+              }),
+            ],
+          },
+        });
+
+        const retrieve = await runCli(runtime, ['--json', 'retrieve', 'where is maker flow documented', '--project', projectPath, '--mode', 'lexical', '--page-limit', '2'], {
+          cwd: root,
+          env,
+        });
+        expect(retrieve.exitCode).toBe(0);
+        expect(parseJsonEnvelope(retrieve.stdout)).toMatchObject({
+          ok: true,
+          command: 'retrieve',
+          data: {
+            query: 'where is maker flow documented',
+            matchedLearnings: [
+              expect.objectContaining({
+                sourceId: 'selector-json',
+                learningType: 'discovery',
+              }),
+            ],
+            pages: [
+              expect.objectContaining({
+                sourceId: 'selector-json',
+                title: 'Selector Start',
+                markdown: expect.stringContaining('Maker flow documentation starts here.'),
+              }),
+            ],
           },
         });
       } finally {

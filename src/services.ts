@@ -14,8 +14,10 @@ import { processEmbeddingJobs } from './hybrid/worker.js';
 import { getAiocsConfigDir, getAiocsDataDir, getAiocsSourcesDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config.js';
+import { scoreLearning, scoreSourceContext, type RetrievalLearning } from './retrieval.js';
 import { uniqueResolvedPaths } from './spec/source-spec-files.js';
 import { loadSourceSpec } from './spec/source-spec.js';
+import { loadSourceContextFile, type CommonLocation, type SourceContext } from './source-context.js';
 
 export type SearchOptions = {
   source: string[];
@@ -28,6 +30,30 @@ export type SearchOptions = {
   offset?: number;
   mode?: SearchMode;
 };
+
+export type PageListOptions = {
+  snapshot?: string;
+  query?: string;
+  path?: string[];
+  limit?: number;
+  offset?: number;
+};
+
+function dedupePagesByIdentity<T extends { sourceId: string; snapshotId: string; pageUrl: string; filePath?: string | null }>(
+  rows: T[],
+): T[] {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+  for (const row of rows) {
+    const key = `${row.sourceId}::${row.snapshotId}::${row.filePath ?? row.pageUrl}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(row);
+  }
+  return deduped;
+}
 
 type CatalogContext = {
   dataDir: string;
@@ -84,6 +110,152 @@ export async function listSources(): Promise<{
 }> {
   const sources = await withCatalog(({ catalog }) => catalog.listSources());
   return { sources };
+}
+
+export async function describeSource(sourceId: string): Promise<{
+  source: NonNullable<Awaited<ReturnType<typeof listSources>>['sources'][number]>;
+  context: {
+    sourceId: string;
+    context: SourceContext | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+  };
+  latestSnapshot: {
+    snapshotId: string;
+    detectedVersion: string | null;
+    createdAt: string;
+    pageCount: number;
+  } | null;
+  recentLearnings: RetrievalLearning[];
+}> {
+  return withCatalog(({ catalog }) => {
+    const source = catalog.getSourceById(sourceId);
+    if (!source) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.sourceNotFound,
+        `Unknown source '${sourceId}'`,
+      );
+    }
+
+    const latestSnapshot = catalog.listSnapshots(sourceId)[0] ?? null;
+
+    return {
+      source,
+      context: catalog.getSourceContext(sourceId),
+      latestSnapshot,
+      recentLearnings: catalog.listRoutingLearnings({
+        sourceId,
+        limit: 10,
+      }),
+    };
+  });
+}
+
+export async function upsertSourceContextFromFile(sourceId: string, contextFile: string): Promise<{
+  sourceId: string;
+  context: SourceContext;
+  contextFile: string;
+  createdAt: string;
+  updatedAt: string;
+}> {
+  const resolvedContextFile = resolve(contextFile);
+  const context = await loadSourceContextFile(resolvedContextFile);
+  const result = await withCatalog(({ catalog }) => catalog.upsertSourceContext(sourceId, context));
+  return {
+    ...result,
+    contextFile: resolvedContextFile,
+  };
+}
+
+export async function getSourceContextForSource(sourceId: string): Promise<{
+  sourceId: string;
+  context: SourceContext | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}> {
+  return withCatalog(({ catalog }) => catalog.getSourceContext(sourceId));
+}
+
+export async function listSourcePages(sourceId: string, options: PageListOptions): Promise<{
+  sourceId: string;
+  snapshotId: string;
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  pages: Array<{
+    url: string;
+    title: string;
+    pageKind: 'document' | 'file';
+    filePath: string | null;
+    language: string | null;
+    markdownLength: number;
+  }>;
+}> {
+  return withCatalog(({ catalog }) => catalog.listPages({
+    sourceId,
+    ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
+    ...(options.query ? { query: options.query } : {}),
+    ...(options.path && options.path.length > 0 ? { pathPatterns: options.path } : {}),
+    ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
+    ...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
+  }));
+}
+
+export async function showPage(input: {
+  sourceId: string;
+  snapshotId?: string;
+  url?: string;
+  filePath?: string;
+}): Promise<{
+  sourceId: string;
+  snapshotId: string;
+  page: {
+    url: string;
+    title: string;
+    markdown: string;
+    pageKind: 'document' | 'file';
+    filePath: string | null;
+    language: string | null;
+  };
+}> {
+  return withCatalog(({ catalog }) => catalog.getPage(input));
+}
+
+export async function saveRoutingLearning(input: {
+  sourceId: string;
+  snapshotId?: string;
+  learningType: 'discovery' | 'negative';
+  intent: string;
+  pageUrl?: string;
+  filePath?: string;
+  title?: string;
+  note?: string;
+  searchTerms?: string[];
+}): Promise<{ learning: RetrievalLearning }> {
+  const learning = await withCatalog(({ catalog }) => catalog.upsertRoutingLearning({
+    sourceId: input.sourceId,
+    ...(input.snapshotId ? { snapshotId: input.snapshotId } : {}),
+    learningType: input.learningType,
+    intent: input.intent,
+    ...(input.pageUrl ? { pageUrl: input.pageUrl } : {}),
+    ...(input.filePath ? { filePath: input.filePath } : {}),
+    ...(input.title ? { title: input.title } : {}),
+    ...(input.note ? { note: input.note } : {}),
+    ...(input.searchTerms ? { searchTerms: input.searchTerms } : {}),
+  }));
+
+  return { learning };
+}
+
+export async function listRoutingLearningsForQuery(input?: {
+  sourceId?: string;
+  learningType?: 'discovery' | 'negative';
+  intentQuery?: string;
+  limit?: number;
+}): Promise<{ learnings: RetrievalLearning[] }> {
+  const learnings = await withCatalog(({ catalog }) => catalog.listRoutingLearnings(input));
+  return { learnings };
 }
 
 export async function fetchSources(sourceIdOrAll: string): Promise<{
@@ -352,6 +524,203 @@ export async function searchCatalog(query: string, options: SearchOptions): Prom
     modeUsed: results.modeUsed,
     results: results.results,
   };
+}
+
+export async function retrieveContext(query: string, options: SearchOptions & { pageLimit?: number }): Promise<{
+  query: string;
+  modeRequested: SearchMode;
+  modeUsed: 'lexical' | 'hybrid' | 'semantic';
+  sourceScope: string[];
+  sourceHints: Array<{
+    sourceId: string;
+    score: number;
+    context: SourceContext;
+    matchedCommonLocations: CommonLocation[];
+  }>;
+  matchedLearnings: Array<RetrievalLearning & { score: number }>;
+  avoidedLearnings: Array<RetrievalLearning & { score: number }>;
+  search: {
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+    results: Array<{
+      chunkId: number;
+      sourceId: string;
+      snapshotId: string;
+      pageUrl: string;
+      pageTitle: string;
+      sectionTitle: string;
+      markdown: string;
+      pageKind: 'document' | 'file';
+      filePath: string | null;
+      language: string | null;
+      score: number;
+      signals: Array<'lexical' | 'vector'>;
+    }>;
+  };
+  pages: Array<{
+    sourceId: string;
+    snapshotId: string;
+    url: string;
+    title: string;
+    markdown: string;
+    pageKind: 'document' | 'file';
+    filePath: string | null;
+    language: string | null;
+  }>;
+}> {
+  const cwd = options.project ? resolve(options.project) : process.cwd();
+  const explicitSources = options.source.length > 0;
+  const pageLimit = typeof options.pageLimit === 'number' ? options.pageLimit : 3;
+
+  return withCatalog(async ({ catalog }) => {
+    const hybridConfig = getHybridRuntimeConfig();
+    const scope = resolveProjectScope(cwd, catalog.listProjectLinks());
+
+    if (!explicitSources && !options.all && !scope) {
+      throw new AiocsError(
+        AIOCS_ERROR_CODES.noProjectScope,
+        'No linked project scope found. Use --source or --all.',
+      );
+    }
+
+    const sourceScope = explicitSources
+      ? options.source
+      : options.all
+        ? catalog.listSources().map((source) => source.id)
+        : (scope?.sourceIds ?? []);
+
+    const learnings = catalog.listRoutingLearnings({
+      limit: 100,
+    }).filter((learning) => sourceScope.length === 0 || sourceScope.includes(learning.sourceId));
+
+    const scoredLearnings = learnings
+      .map((learning) => ({
+        ...learning,
+        score: scoreLearning(query, learning),
+      }))
+      .filter((learning) => learning.score > 0)
+      .sort((left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt));
+
+    const matchedLearnings = scoredLearnings.filter((learning) => learning.learningType === 'discovery');
+    const avoidedLearnings = scoredLearnings.filter((learning) => learning.learningType === 'negative');
+    const avoidedPageKeys = new Set(
+      avoidedLearnings.map((learning) => `${learning.sourceId}::${learning.filePath ?? learning.pageUrl ?? ''}`),
+    );
+
+    const sourceHints = sourceScope
+      .map((sourceId) => {
+        const contextRecord = catalog.getSourceContext(sourceId);
+        const score = scoreSourceContext(query, contextRecord.context);
+        if (!contextRecord.context || score <= 0) {
+          return null;
+        }
+
+        const matchedCommonLocations = contextRecord.context.commonLocations.filter((location) =>
+          scoreSourceContext(query, {
+            purpose: '',
+            summary: '',
+            topicHints: [],
+            commonLocations: [location],
+            gotchas: [],
+            authNotes: [],
+          }) > 0,
+        );
+
+        return {
+          sourceId,
+          score,
+          context: contextRecord.context,
+          matchedCommonLocations,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      .sort((left, right) => right.score - left.score || left.sourceId.localeCompare(right.sourceId));
+
+    const search = await searchHybridCatalog({
+      catalog,
+      config: hybridConfig,
+      query,
+      mode: options.mode ?? hybridConfig.defaultSearchMode,
+      searchInput: {
+        cwd,
+        ...(explicitSources ? { sourceIds: options.source } : {}),
+        ...(options.snapshot ? { snapshotId: options.snapshot } : {}),
+        ...(options.all ? { all: true } : {}),
+        ...(options.path && options.path.length > 0 ? { pathPatterns: options.path } : {}),
+        ...(options.language && options.language.length > 0 ? { languages: options.language } : {}),
+        ...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
+      },
+    });
+
+    const learnedPages = matchedLearnings
+      .filter((learning) => learning.pageUrl || learning.filePath)
+      .map((learning) => ({
+        sourceId: learning.sourceId,
+        snapshotId: learning.snapshotId ?? catalog.getSourceById(learning.sourceId)?.lastSuccessfulSnapshotId ?? '',
+        pageUrl: learning.pageUrl ?? '',
+        filePath: learning.filePath ?? null,
+      }))
+      .filter((entry) => entry.snapshotId);
+
+    const searchedPages = search.results
+      .filter((result) => !avoidedPageKeys.has(`${result.sourceId}::${result.filePath ?? result.pageUrl}`))
+      .map((result) => ({
+        sourceId: result.sourceId,
+        snapshotId: result.snapshotId,
+        pageUrl: result.pageUrl,
+        filePath: result.filePath,
+      }));
+
+    const selectedPages = dedupePagesByIdentity([
+      ...learnedPages,
+      ...searchedPages,
+    ]).slice(0, Math.max(1, pageLimit));
+
+    const pages = selectedPages.flatMap((entry) => {
+      try {
+        const page = catalog.getPage({
+          sourceId: entry.sourceId,
+          snapshotId: entry.snapshotId,
+          ...(entry.filePath ? { filePath: entry.filePath } : { url: entry.pageUrl }),
+        });
+
+        return [{
+          sourceId: page.sourceId,
+          snapshotId: page.snapshotId,
+          ...page.page,
+        }];
+      } catch (error) {
+        if (
+          error instanceof AiocsError
+          && (error.code === AIOCS_ERROR_CODES.pageNotFound || error.code === AIOCS_ERROR_CODES.snapshotNotFound)
+        ) {
+          return [];
+        }
+        throw error;
+      }
+    });
+
+    return {
+      query,
+      modeRequested: search.modeRequested,
+      modeUsed: search.modeUsed,
+      sourceScope,
+      sourceHints,
+      matchedLearnings,
+      avoidedLearnings,
+      search: {
+        total: search.total,
+        limit: search.limit,
+        offset: search.offset,
+        hasMore: search.hasMore,
+        results: search.results,
+      },
+      pages,
+    };
+  });
 }
 
 export async function showChunk(chunkId: number): Promise<{

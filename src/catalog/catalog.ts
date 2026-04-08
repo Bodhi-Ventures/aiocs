@@ -11,6 +11,7 @@ import { AiocsError, AIOCS_ERROR_CODES } from '../errors.js';
 import { toSqliteGlob } from '../patterns.js';
 import { canonicalizeManagedSpecPath } from '../runtime/paths.js';
 import { parseSourceSpecObject, type SourceSpec } from '../spec/source-spec.js';
+import type { SourceContext } from '../source-context.js';
 
 type OpenCatalogOptions = {
   dataDir: string;
@@ -72,6 +73,33 @@ type SnapshotPageRow = {
   page_kind: 'document' | 'file';
   file_path: string | null;
   language: string | null;
+};
+
+type PageRow = {
+  snapshot_id: string;
+  url: string;
+  title: string;
+  markdown: string;
+  page_kind: 'document' | 'file';
+  file_path: string | null;
+  language: string | null;
+};
+
+type RoutingLearningType = 'discovery' | 'negative';
+
+type RoutingLearningRecord = {
+  learningId: string;
+  sourceId: string;
+  snapshotId: string | null;
+  learningType: RoutingLearningType;
+  intent: string;
+  pageUrl: string | null;
+  filePath: string | null;
+  title: string | null;
+  note: string | null;
+  searchTerms: string[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 type DaemonStateRow = {
@@ -241,6 +269,35 @@ function initSchema(db: Database.Database): void {
       PRIMARY KEY(project_path, source_id)
     );
 
+    CREATE TABLE IF NOT EXISTS source_context (
+      source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+      context_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS routing_learnings (
+      id TEXT PRIMARY KEY,
+      route_key TEXT NOT NULL UNIQUE,
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      snapshot_id TEXT REFERENCES snapshots(id) ON DELETE SET NULL,
+      learning_type TEXT NOT NULL CHECK(learning_type IN ('discovery', 'negative')),
+      intent TEXT NOT NULL,
+      page_url TEXT,
+      file_path TEXT,
+      title TEXT,
+      note TEXT,
+      search_terms_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_routing_learnings_source_type
+      ON routing_learnings(source_id, learning_type, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_routing_learnings_intent
+      ON routing_learnings(intent, updated_at);
+
     CREATE TABLE IF NOT EXISTS daemon_state (
       singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
       last_started_at TEXT,
@@ -363,6 +420,22 @@ function normalizeQuery(query: string): string {
     .filter(Boolean);
 
   return words.join(' ');
+}
+
+function buildRouteKey(input: {
+  sourceId: string;
+  learningType: RoutingLearningType;
+  intent: string;
+  pageUrl?: string | null;
+  filePath?: string | null;
+}): string {
+  return sha256(stableStringify({
+    sourceId: input.sourceId,
+    learningType: input.learningType,
+    intent: normalizeQuery(input.intent).toLowerCase(),
+    pageUrl: input.pageUrl ?? null,
+    filePath: input.filePath ?? null,
+  }));
 }
 
 function normalizePatternFilters(patterns?: string[]): string[] | null {
@@ -837,6 +910,99 @@ export function openCatalog(options: OpenCatalogOptions) {
       return JSON.parse(row.spec_json) as SourceSpec;
     },
 
+    getSourceById(sourceId: string): {
+      id: string;
+      kind: SourceSpec['kind'];
+      label: string;
+      specPath: string | null;
+      nextDueAt: string;
+      isDue: boolean;
+      nextCanaryDueAt: string | null;
+      isCanaryDue: boolean;
+      lastCheckedAt: string | null;
+      lastSuccessfulSnapshotAt: string | null;
+      lastSuccessfulSnapshotId: string | null;
+      lastCanaryCheckedAt: string | null;
+      lastSuccessfulCanaryAt: string | null;
+      lastCanaryStatus: 'pass' | 'fail' | null;
+    } | null {
+      return this.listSources().find((source) => source.id === sourceId) ?? null;
+    },
+
+    upsertSourceContext(sourceId: string, context: SourceContext): {
+      sourceId: string;
+      context: SourceContext;
+      createdAt: string;
+      updatedAt: string;
+    } {
+      const source = this.getSourceById(sourceId);
+      if (!source) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${sourceId}'`,
+        );
+      }
+
+      const timestamp = nowIso();
+      const existing = db.prepare(`
+        SELECT created_at
+        FROM source_context
+        WHERE source_id = ?
+      `).get(sourceId) as { created_at: string } | undefined;
+
+      db.prepare(`
+        INSERT INTO source_context (source_id, context_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source_id) DO UPDATE SET
+          context_json = excluded.context_json,
+          updated_at = excluded.updated_at
+      `).run(
+        sourceId,
+        JSON.stringify(context),
+        existing?.created_at ?? timestamp,
+        timestamp,
+      );
+
+      return {
+        sourceId,
+        context,
+        createdAt: existing?.created_at ?? timestamp,
+        updatedAt: timestamp,
+      };
+    },
+
+    getSourceContext(sourceId: string): {
+      sourceId: string;
+      context: SourceContext | null;
+      createdAt: string | null;
+      updatedAt: string | null;
+    } {
+      const source = this.getSourceById(sourceId);
+      if (!source) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${sourceId}'`,
+        );
+      }
+
+      const row = db.prepare(`
+        SELECT context_json, created_at, updated_at
+        FROM source_context
+        WHERE source_id = ?
+      `).get(sourceId) as {
+        context_json: string;
+        created_at: string;
+        updated_at: string;
+      } | undefined;
+
+      return {
+        sourceId,
+        context: row ? JSON.parse(row.context_json) as SourceContext : null,
+        createdAt: row?.created_at ?? null,
+        updatedAt: row?.updated_at ?? null,
+      };
+    },
+
     listSources(): Array<{
       id: string;
       kind: SourceSpec['kind'];
@@ -904,6 +1070,373 @@ export function openCatalog(options: OpenCatalogOptions) {
           lastCanaryStatus: row.last_canary_status,
         };
       });
+    },
+
+    listPages(input: {
+      sourceId: string;
+      snapshotId?: string;
+      query?: string;
+      pathPatterns?: string[];
+      limit?: number;
+      offset?: number;
+    }): {
+      sourceId: string;
+      snapshotId: string;
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+      pages: Array<{
+        url: string;
+        title: string;
+        pageKind: 'document' | 'file';
+        filePath: string | null;
+        language: string | null;
+        markdownLength: number;
+      }>;
+    } {
+      const source = this.getSourceById(input.sourceId);
+      if (!source) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
+      }
+
+      const snapshotId = input.snapshotId ?? source.lastSuccessfulSnapshotId;
+      if (!snapshotId) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `No successful snapshot found for source '${input.sourceId}'`,
+        );
+      }
+
+      const snapshotRow = db.prepare(`
+        SELECT id
+        FROM snapshots
+        WHERE id = ?
+          AND source_id = ?
+      `).get(snapshotId, input.sourceId) as { id: string } | undefined;
+      if (!snapshotRow) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `Snapshot '${snapshotId}' not found for source '${input.sourceId}'`,
+        );
+      }
+
+      const normalizedQuery = input.query ? normalizeQuery(input.query).toLowerCase() : '';
+      const pathPatterns = normalizePatternFilters(input.pathPatterns);
+      const limit = assertPaginationValue(input.limit, 'limit', 50);
+      const offset = assertPaginationValue(input.offset, 'offset', 0);
+      const whereSql = [
+        'snapshot_id = ?',
+      ];
+      const args: unknown[] = [snapshotId];
+
+      if (normalizedQuery) {
+        whereSql.push('(LOWER(title) LIKE ? OR LOWER(url) LIKE ? OR LOWER(COALESCE(file_path, \'\')) LIKE ?)');
+        const queryLike = `%${normalizedQuery}%`;
+        args.push(queryLike, queryLike, queryLike);
+      }
+
+      if (pathPatterns && pathPatterns.length > 0) {
+        whereSql.push(`file_path IS NOT NULL AND (${pathPatterns.map(() => 'file_path GLOB ?').join(' OR ')})`);
+        args.push(...pathPatterns.map((pattern) => toSqliteGlob(pattern)));
+      }
+
+      const whereClause = whereSql.join(' AND ');
+      const totalRow = db.prepare(`
+        SELECT COUNT(*) AS total
+        FROM pages
+        WHERE ${whereClause}
+      `).get(...args) as { total: number };
+
+      const rows = db.prepare(`
+        SELECT url, title, markdown, page_kind, file_path, language
+        FROM pages
+        WHERE ${whereClause}
+        ORDER BY title, url
+        LIMIT ?
+        OFFSET ?
+      `).all(...args, limit, offset) as SnapshotPageRow[];
+
+      return {
+        sourceId: input.sourceId,
+        snapshotId,
+        total: totalRow.total,
+        limit,
+        offset,
+        hasMore: offset + rows.length < totalRow.total,
+        pages: rows.map((row) => ({
+          url: row.url,
+          title: row.title,
+          pageKind: row.page_kind,
+          filePath: row.file_path,
+          language: row.language,
+          markdownLength: row.markdown.length,
+        })),
+      };
+    },
+
+    getPage(input: {
+      sourceId: string;
+      snapshotId?: string;
+      url?: string;
+      filePath?: string;
+    }): {
+      sourceId: string;
+      snapshotId: string;
+      page: {
+        url: string;
+        title: string;
+        markdown: string;
+        pageKind: 'document' | 'file';
+        filePath: string | null;
+        language: string | null;
+      };
+    } {
+      const source = this.getSourceById(input.sourceId);
+      if (!source) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
+      }
+
+      if ((!input.url && !input.filePath) || (input.url && input.filePath)) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.invalidArgument,
+          'Provide exactly one of url or filePath',
+        );
+      }
+
+      const snapshotId = input.snapshotId ?? source.lastSuccessfulSnapshotId;
+      if (!snapshotId) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.snapshotNotFound,
+          `No successful snapshot found for source '${input.sourceId}'`,
+        );
+      }
+
+      const row = db.prepare(`
+        SELECT p.snapshot_id, p.url, p.title, p.markdown, p.page_kind, p.file_path, p.language
+        FROM pages p
+        INNER JOIN snapshots s
+          ON s.id = p.snapshot_id
+        WHERE p.snapshot_id = ?
+          AND s.source_id = ?
+          AND ${input.url ? 'p.url = ?' : 'p.file_path = ?'}
+        LIMIT 1
+      `).get(snapshotId, input.sourceId, input.url ?? input.filePath) as PageRow | undefined;
+
+      if (!row) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.pageNotFound,
+          input.url
+            ? `Page '${input.url}' not found for source '${input.sourceId}'`
+            : `Page path '${input.filePath}' not found for source '${input.sourceId}'`,
+        );
+      }
+
+      return {
+        sourceId: input.sourceId,
+        snapshotId,
+        page: {
+          url: row.url,
+          title: row.title,
+          markdown: row.markdown,
+          pageKind: row.page_kind,
+          filePath: row.file_path,
+          language: row.language,
+        },
+      };
+    },
+
+    upsertRoutingLearning(input: {
+      sourceId: string;
+      snapshotId?: string | null;
+      learningType: RoutingLearningType;
+      intent: string;
+      pageUrl?: string | null;
+      filePath?: string | null;
+      title?: string | null;
+      note?: string | null;
+      searchTerms?: string[];
+    }): RoutingLearningRecord {
+      const source = this.getSourceById(input.sourceId);
+      if (!source) {
+        throw new AiocsError(
+          AIOCS_ERROR_CODES.sourceNotFound,
+          `Unknown source '${input.sourceId}'`,
+        );
+      }
+
+      const timestamp = nowIso();
+      const routeKey = buildRouteKey(input);
+      const searchTerms = [...new Set((input.searchTerms ?? []).map((term) => term.trim()).filter(Boolean))];
+      const validationSnapshotId = input.snapshotId ?? source.lastSuccessfulSnapshotId ?? null;
+      const storedSnapshotId = input.snapshotId ?? null;
+      const hasTargetPage = Boolean(input.pageUrl || input.filePath);
+
+      if (input.snapshotId) {
+        const snapshotRow = db.prepare(`
+          SELECT id
+          FROM snapshots
+          WHERE id = ?
+            AND source_id = ?
+        `).get(input.snapshotId, input.sourceId) as { id: string } | undefined;
+        if (!snapshotRow) {
+          throw new AiocsError(
+            AIOCS_ERROR_CODES.snapshotNotFound,
+            `Snapshot '${input.snapshotId}' not found for source '${input.sourceId}'`,
+          );
+        }
+      }
+
+      if (hasTargetPage) {
+        if (!validationSnapshotId) {
+          throw new AiocsError(
+            AIOCS_ERROR_CODES.snapshotNotFound,
+            `No successful snapshot found for source '${input.sourceId}'`,
+          );
+        }
+
+        this.getPage({
+          sourceId: input.sourceId,
+          snapshotId: validationSnapshotId,
+          ...(input.pageUrl ? { url: input.pageUrl } : input.filePath ? { filePath: input.filePath } : {}),
+        });
+      }
+
+      const existing = db.prepare(`
+        SELECT id, created_at
+        FROM routing_learnings
+        WHERE route_key = ?
+      `).get(routeKey) as { id: string; created_at: string } | undefined;
+      const learningId = existing?.id ?? randomUUID();
+
+      db.prepare(`
+        INSERT INTO routing_learnings (
+          id,
+          route_key,
+          source_id,
+          snapshot_id,
+          learning_type,
+          intent,
+          page_url,
+          file_path,
+          title,
+          note,
+          search_terms_json,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(route_key) DO UPDATE SET
+          snapshot_id = excluded.snapshot_id,
+          title = excluded.title,
+          note = excluded.note,
+          search_terms_json = excluded.search_terms_json,
+          updated_at = excluded.updated_at
+      `).run(
+        learningId,
+        routeKey,
+        input.sourceId,
+        storedSnapshotId,
+        input.learningType,
+        input.intent.trim(),
+        input.pageUrl ?? null,
+        input.filePath ?? null,
+        input.title ?? null,
+        input.note ?? null,
+        JSON.stringify(searchTerms),
+        existing?.created_at ?? timestamp,
+        timestamp,
+      );
+
+      return {
+        learningId,
+        sourceId: input.sourceId,
+        snapshotId: storedSnapshotId,
+        learningType: input.learningType,
+        intent: input.intent.trim(),
+        pageUrl: input.pageUrl ?? null,
+        filePath: input.filePath ?? null,
+        title: input.title ?? null,
+        note: input.note ?? null,
+        searchTerms,
+        createdAt: existing?.created_at ?? timestamp,
+        updatedAt: timestamp,
+      };
+    },
+
+    listRoutingLearnings(input?: {
+      sourceId?: string;
+      learningType?: RoutingLearningType;
+      intentQuery?: string;
+      limit?: number;
+    }): RoutingLearningRecord[] {
+      const whereSql: string[] = [];
+      const args: unknown[] = [];
+      if (input?.sourceId) {
+        whereSql.push('source_id = ?');
+        args.push(input.sourceId);
+      }
+      if (input?.learningType) {
+        whereSql.push('learning_type = ?');
+        args.push(input.learningType);
+      }
+      if (input?.intentQuery) {
+        whereSql.push('LOWER(intent) LIKE ?');
+        args.push(`%${normalizeQuery(input.intentQuery).toLowerCase()}%`);
+      }
+      const limit = assertPaginationValue(input?.limit, 'limit', 50);
+      const rows = db.prepare(`
+        SELECT
+          id,
+          source_id,
+          snapshot_id,
+          learning_type,
+          intent,
+          page_url,
+          file_path,
+          title,
+          note,
+          search_terms_json,
+          created_at,
+          updated_at
+        FROM routing_learnings
+        ${whereSql.length > 0 ? `WHERE ${whereSql.join(' AND ')}` : ''}
+        ORDER BY updated_at DESC, source_id, intent
+        LIMIT ?
+      `).all(...args, limit) as Array<{
+        id: string;
+        source_id: string;
+        snapshot_id: string | null;
+        learning_type: RoutingLearningType;
+        intent: string;
+        page_url: string | null;
+        file_path: string | null;
+        title: string | null;
+        note: string | null;
+        search_terms_json: string;
+        created_at: string;
+        updated_at: string;
+      }>;
+
+      return rows.map((row) => ({
+        learningId: row.id,
+        sourceId: row.source_id,
+        snapshotId: row.snapshot_id,
+        learningType: row.learning_type,
+        intent: row.intent,
+        pageUrl: row.page_url,
+        filePath: row.file_path,
+        title: row.title,
+        note: row.note,
+        searchTerms: JSON.parse(row.search_terms_json) as string[],
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
     },
 
     listDueSourceIds(referenceTime = nowIso()): string[] {

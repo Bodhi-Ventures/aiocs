@@ -58,7 +58,10 @@ aiocs --json version
 aiocs --json doctor
 aiocs --json init --no-fetch
 aiocs --json source list
+aiocs --json source describe hyperliquid
+aiocs --json page list hyperliquid --query "auth"
 aiocs --json search "maker flow" --source hyperliquid
+aiocs --json retrieve "where is maker flow documented" --source hyperliquid --mode lexical
 aiocs --json show 42
 ```
 
@@ -181,6 +184,10 @@ aiocs project unlink /absolute/path/to/project lighter
 Search and inspect results:
 
 ```bash
+aiocs source describe hyperliquid
+aiocs source context show hyperliquid
+aiocs page list hyperliquid --query "auth"
+aiocs page show hyperliquid --url "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api"
 aiocs search "maker flow" --source hyperliquid
 aiocs search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript
 aiocs search "maker flow" --source hyperliquid --mode lexical
@@ -198,14 +205,25 @@ aiocs backup export /absolute/path/to/backup
 aiocs verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
+Awareness and learning flow:
+
+```bash
+aiocs source context upsert hyperliquid ~/.aiocs/source-context/hyperliquid.yaml
+aiocs learning save --source hyperliquid --kind discovery --intent "maker flow" --page-url "https://..."
+aiocs learning list --source hyperliquid
+aiocs retrieve "where is maker flow documented" --source hyperliquid --mode lexical
+```
+
 When `aiocs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
 
 For agents, the intended decision order is:
 
-1. check `source list` or scoped `search` first
+1. check `source list`, `source describe`, or `page list` first
 2. if the source exists and is due, run `refresh due <source-id>`
-3. if the source is missing but worth reusing, add a spec under `~/.aiocs/sources`, then upsert and refresh only that source
-4. avoid `fetch all` unless the user explicitly asks or the daemon is doing maintenance
+3. use `search` to shortlist candidates, then `retrieve` or `page show` to read the full page before answering
+4. if the source is missing but worth reusing, add a spec under `~/.aiocs/sources`, then upsert and refresh only that source
+5. save durable discoveries or negative paths with `learning save`
+6. avoid `fetch all` unless the user explicitly asks or the daemon is doing maintenance
 
 ### Git repo sources
 

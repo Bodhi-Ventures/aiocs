@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { AiocsError, AIOCS_ERROR_CODES, toAiocsError } from './errors.js';
 import { packageDescription, packageName, packageVersion } from './runtime/package-metadata.js';
 import {
+  describeSource,
   backfillEmbeddings,
   clearEmbeddings,
   diffSnapshotsForSource,
@@ -17,16 +18,23 @@ import {
   importCatalogBackup,
   initManagedSources,
   linkProjectSources,
+  listRoutingLearningsForQuery,
+  listSourcePages,
   listSnapshotsForSource,
   listSources,
+  retrieveContext,
   refreshDueSources,
   runSourceCanaries,
   runEmbeddingWorker,
+  saveRoutingLearning,
   searchCatalog,
+  showPage,
   showChunk,
+  upsertSourceContextFromFile,
   unlinkProjectSources,
   upsertSourceFromSpecFile,
   verifyCoverage,
+  getSourceContextForSource,
 } from './services.js';
 
 const doctorCheckSchema = z.object({
@@ -62,6 +70,56 @@ const sourceSchema = z.object({
   lastCanaryCheckedAt: z.string().nullable(),
   lastSuccessfulCanaryAt: z.string().nullable(),
   lastCanaryStatus: z.enum(['pass', 'fail']).nullable(),
+});
+
+const sourceContextSchema = z.object({
+  purpose: z.string().optional(),
+  summary: z.string().optional(),
+  topicHints: z.array(z.string()),
+  commonLocations: z.array(z.object({
+    label: z.string(),
+    url: z.string().optional(),
+    filePath: z.string().optional(),
+    note: z.string().optional(),
+  })),
+  gotchas: z.array(z.string()),
+  authNotes: z.array(z.string()),
+});
+
+const routingLearningSchema = z.object({
+  learningId: z.string(),
+  sourceId: z.string(),
+  snapshotId: z.string().nullable(),
+  learningType: z.enum(['discovery', 'negative']),
+  intent: z.string(),
+  pageUrl: z.string().nullable(),
+  filePath: z.string().nullable(),
+  title: z.string().nullable(),
+  note: z.string().nullable(),
+  searchTerms: z.array(z.string()),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const pageSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  markdown: z.string(),
+  pageKind: z.enum(['document', 'file']),
+  filePath: z.string().nullable(),
+  language: z.string().nullable(),
+});
+
+const pageListingSchema = z.object({
+  sourceId: z.string(),
+  snapshotId: z.string(),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  hasMore: z.boolean(),
+  pages: z.array(pageSchema.omit({ markdown: true }).extend({
+    markdownLength: z.number().int().nonnegative(),
+  })),
 });
 
 const fetchResultSchema = z.object({
@@ -270,10 +328,27 @@ const toolHandlers: Record<string, ToolHandler> = {
   }),
   source_upsert: async (args = {}) => upsertSourceFromSpecFile(args.specFile as string),
   source_list: async () => listSources(),
+  source_describe: async (args = {}) => describeSource(args.sourceId as string),
+  source_context_show: async (args = {}) => getSourceContextForSource(args.sourceId as string),
+  source_context_upsert: async (args = {}) =>
+    upsertSourceContextFromFile(args.sourceId as string, args.contextFile as string),
   fetch: async (args = {}) => fetchSources(args.sourceIdOrAll as string),
   canary: async (args = {}) => runSourceCanaries(args.sourceIdOrAll as string),
   refresh_due: async (args = {}) => refreshDueSources((args.sourceIdOrAll as string | undefined) ?? 'all'),
   snapshot_list: async (args = {}) => listSnapshotsForSource(args.sourceId as string),
+  page_list: async (args = {}) => listSourcePages(args.sourceId as string, {
+    ...(typeof args.snapshotId === 'string' ? { snapshot: args.snapshotId } : {}),
+    ...(typeof args.query === 'string' ? { query: args.query } : {}),
+    ...(Array.isArray(args.pathPatterns) ? { path: args.pathPatterns as string[] } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+  }),
+  page_show: async (args = {}) => showPage({
+    sourceId: args.sourceId as string,
+    ...(typeof args.snapshotId === 'string' ? { snapshotId: args.snapshotId } : {}),
+    ...(typeof args.url === 'string' ? { url: args.url } : {}),
+    ...(typeof args.filePath === 'string' ? { filePath: args.filePath } : {}),
+  }),
   diff_snapshots: async (args = {}) => diffSnapshotsForSource({
     sourceId: args.sourceId as string,
     ...(typeof args.fromSnapshotId === 'string' ? { fromSnapshotId: args.fromSnapshotId } : {}),
@@ -293,6 +368,35 @@ const toolHandlers: Record<string, ToolHandler> = {
     ...(typeof args.mode === 'string' ? { mode: args.mode as 'auto' | 'lexical' | 'hybrid' | 'semantic' } : {}),
     ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
     ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+  }),
+  retrieve_context: async (args = {}) => retrieveContext(args.query as string, {
+    source: (args.sourceIds as string[] | undefined) ?? [],
+    ...(typeof args.snapshotId === 'string' ? { snapshot: args.snapshotId } : {}),
+    ...(typeof args.all === 'boolean' ? { all: args.all } : {}),
+    ...(typeof args.project === 'string' ? { project: args.project } : {}),
+    ...(Array.isArray(args.pathPatterns) ? { path: args.pathPatterns as string[] } : {}),
+    ...(Array.isArray(args.languages) ? { language: args.languages as string[] } : {}),
+    ...(typeof args.mode === 'string' ? { mode: args.mode as 'auto' | 'lexical' | 'hybrid' | 'semantic' } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+    ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+    ...(typeof args.pageLimit === 'number' ? { pageLimit: args.pageLimit } : {}),
+  }),
+  learning_save: async (args = {}) => saveRoutingLearning({
+    sourceId: args.sourceId as string,
+    learningType: args.learningType as 'discovery' | 'negative',
+    intent: args.intent as string,
+    ...(typeof args.snapshotId === 'string' ? { snapshotId: args.snapshotId } : {}),
+    ...(typeof args.pageUrl === 'string' ? { pageUrl: args.pageUrl } : {}),
+    ...(typeof args.filePath === 'string' ? { filePath: args.filePath } : {}),
+    ...(typeof args.title === 'string' ? { title: args.title } : {}),
+    ...(typeof args.note === 'string' ? { note: args.note } : {}),
+    ...(Array.isArray(args.searchTerms) ? { searchTerms: args.searchTerms as string[] } : {}),
+  }),
+  learning_list: async (args = {}) => listRoutingLearningsForQuery({
+    ...(typeof args.sourceId === 'string' ? { sourceId: args.sourceId } : {}),
+    ...(typeof args.learningType === 'string' ? { learningType: args.learningType as 'discovery' | 'negative' } : {}),
+    ...(typeof args.intentQuery === 'string' ? { intentQuery: args.intentQuery } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
   }),
   show: async (args = {}) => showChunk(args.chunkId as number),
   embeddings_status: async () => getEmbeddingStatus(),
@@ -463,6 +567,69 @@ registerAiocsTool(
 );
 
 registerAiocsTool(
+  'source_describe',
+  {
+    title: 'Source describe',
+    description: 'Describe one source with latest snapshot info, curated source context, and recent routing learnings.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+    }),
+    outputSchema: z.object({
+      source: sourceSchema,
+      context: z.object({
+        sourceId: z.string(),
+        context: sourceContextSchema.nullable(),
+        createdAt: z.string().nullable(),
+        updatedAt: z.string().nullable(),
+      }),
+      latestSnapshot: z.object({
+        snapshotId: z.string(),
+        detectedVersion: z.string().nullable(),
+        createdAt: z.string(),
+        pageCount: z.number().int().nonnegative(),
+      }).nullable(),
+      recentLearnings: z.array(routingLearningSchema),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'source_context_show',
+  {
+    title: 'Source context show',
+    description: 'Show curated local source context for a source.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+    }),
+    outputSchema: z.object({
+      sourceId: z.string(),
+      context: sourceContextSchema.nullable(),
+      createdAt: z.string().nullable(),
+      updatedAt: z.string().nullable(),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'source_context_upsert',
+  {
+    title: 'Source context upsert',
+    description: 'Load or update curated local source context from a JSON or YAML file.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+      contextFile: z.string(),
+    }),
+    outputSchema: z.object({
+      sourceId: z.string(),
+      context: sourceContextSchema,
+      contextFile: z.string(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+    }),
+  },
+);
+
+registerAiocsTool(
   'fetch',
   {
     title: 'Fetch',
@@ -521,6 +688,42 @@ registerAiocsTool(
         createdAt: z.string(),
         pageCount: z.number().int().nonnegative(),
       })),
+    }),
+  },
+);
+
+registerAiocsTool(
+  'page_list',
+  {
+    title: 'Page list',
+    description: 'List stored pages for a source snapshot with optional query and path filtering.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+      snapshotId: z.string().optional(),
+      query: z.string().optional(),
+      pathPatterns: z.array(z.string()).optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
+    }),
+    outputSchema: pageListingSchema,
+  },
+);
+
+registerAiocsTool(
+  'page_show',
+  {
+    title: 'Page show',
+    description: 'Read a full stored page by URL or file path.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+      snapshotId: z.string().optional(),
+      url: z.string().optional(),
+      filePath: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      sourceId: z.string(),
+      snapshotId: z.string(),
+      page: pageSchema,
     }),
   },
 );
@@ -602,6 +805,57 @@ registerAiocsTool(
 );
 
 registerAiocsTool(
+  'retrieve_context',
+  {
+    title: 'Retrieve context',
+    description: 'Run aiocs awareness, learned routing hints, search, and full-page reads to assemble grounded answer context.',
+    inputSchema: z.object({
+      query: z.string(),
+      sourceIds: z.array(z.string()).optional(),
+      snapshotId: z.string().optional(),
+      all: z.boolean().optional(),
+      project: z.string().optional(),
+      pathPatterns: z.array(z.string()).optional(),
+      languages: z.array(z.string()).optional(),
+      mode: z.enum(['auto', 'lexical', 'hybrid', 'semantic']).optional(),
+      limit: z.number().int().positive().optional(),
+      offset: z.number().int().nonnegative().optional(),
+      pageLimit: z.number().int().positive().optional(),
+    }),
+    outputSchema: z.object({
+      query: z.string(),
+      modeRequested: z.enum(['auto', 'lexical', 'hybrid', 'semantic']),
+      modeUsed: z.enum(['lexical', 'hybrid', 'semantic']),
+      sourceScope: z.array(z.string()),
+      sourceHints: z.array(z.object({
+        sourceId: z.string(),
+        score: z.number(),
+        context: sourceContextSchema,
+        matchedCommonLocations: z.array(z.object({
+          label: z.string(),
+          url: z.string().optional(),
+          filePath: z.string().optional(),
+          note: z.string().optional(),
+        })),
+      })),
+      matchedLearnings: z.array(routingLearningSchema.extend({ score: z.number() })),
+      avoidedLearnings: z.array(routingLearningSchema.extend({ score: z.number() })),
+      search: z.object({
+        total: z.number().int().nonnegative(),
+        limit: z.number().int().positive(),
+        offset: z.number().int().nonnegative(),
+        hasMore: z.boolean(),
+        results: z.array(searchResultSchema),
+      }),
+      pages: z.array(pageSchema.extend({
+        sourceId: z.string(),
+        snapshotId: z.string(),
+      })),
+    }),
+  },
+);
+
+registerAiocsTool(
   'show',
   {
     title: 'Show',
@@ -611,6 +865,45 @@ registerAiocsTool(
     }),
     outputSchema: z.object({
       chunk: searchResultSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'learning_save',
+  {
+    title: 'Learning save',
+    description: 'Save a discovery or negative routing learning for future retrieval hints.',
+    inputSchema: z.object({
+      sourceId: z.string(),
+      learningType: z.enum(['discovery', 'negative']),
+      intent: z.string(),
+      snapshotId: z.string().optional(),
+      pageUrl: z.string().optional(),
+      filePath: z.string().optional(),
+      title: z.string().optional(),
+      note: z.string().optional(),
+      searchTerms: z.array(z.string()).optional(),
+    }),
+    outputSchema: z.object({
+      learning: routingLearningSchema,
+    }),
+  },
+);
+
+registerAiocsTool(
+  'learning_list',
+  {
+    title: 'Learning list',
+    description: 'List saved routing learnings, optionally filtered by source, type, or intent substring.',
+    inputSchema: z.object({
+      sourceId: z.string().optional(),
+      learningType: z.enum(['discovery', 'negative']).optional(),
+      intentQuery: z.string().optional(),
+      limit: z.number().int().positive().optional(),
+    }),
+    outputSchema: z.object({
+      learnings: z.array(routingLearningSchema),
     }),
   },
 );

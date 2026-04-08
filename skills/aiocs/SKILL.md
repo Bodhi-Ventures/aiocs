@@ -22,6 +22,11 @@ Use this skill when you need authoritative local documentation lookup through th
 - Check `source_list` or scoped `search` before assuming a source is missing.
 - Use `aiocs` first for the bundled `hyperliquid` source and for any repo or machine that already relies on `~/.aiocs`.
 - This skill is the default read/search path. If the task requires source creation, force fetch, targeted refresh, or canary remediation, also load `aiocs-curation`.
+- Default to the awareness loop before answering:
+  - `source describe` to understand the source
+  - `page list` to inspect likely full pages
+  - `search` to shortlist candidate chunks
+  - `retrieve` or `page show` to read the full stored page before synthesizing an answer
 - Only fall back to live browsing when:
   - the source is not present in `aiocs`
   - the user explicitly wants the live site
@@ -38,6 +43,7 @@ Use this skill when you need authoritative local documentation lookup through th
 
 ## Search defaults for agents
 
+- Prefer `retrieve` when the user wants an answer grounded in the right document, not just raw chunk matches.
 - Default to `search` with `mode=auto`.
 - Use `mode=lexical` for exact identifiers, section titles, endpoint names, and error strings.
 - Use `--path` / `pathPatterns` and `--language` / `languages` when searching repo/code sources.
@@ -61,6 +67,15 @@ aiocs --json init --no-fetch
 
 ## Core commands
 
+Inspect source awareness and stored pages:
+
+```bash
+aiocs --json source describe hyperliquid
+aiocs --json source context show hyperliquid
+aiocs --json page list hyperliquid --query "auth"
+aiocs --json page show hyperliquid --url "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api"
+```
+
 Search the shared catalog:
 
 ```bash
@@ -75,6 +90,13 @@ Inspect a specific chunk:
 
 ```bash
 aiocs --json show 42
+```
+
+Assemble answer context from awareness, search, and full-page reads:
+
+```bash
+aiocs --json retrieve "where is maker flow documented" --source hyperliquid --mode lexical
+aiocs --json retrieve "api introduction" --source bulk-trade --mode lexical --page-limit 2
 ```
 
 Inspect source availability and health:
@@ -119,9 +141,13 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `doctor`
 - `init`
 - `source_list`
+- `source_describe`
+- `source_context_show`
 - `canary`
 - `snapshot_list`
 - `diff_snapshots`
+- `page_list`
+- `page_show`
 - `project_link`
 - `project_unlink`
 - `embeddings_status`
@@ -131,20 +157,24 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `backup_export`
 - `backup_import`
 - `search`
+- `retrieve_context`
 - `show`
+- `learning_list`
 - `verify_coverage`
 - `batch`
 
-Mutation-capable MCP tools such as `source_upsert`, `refresh_due`, and `fetch` belong to `aiocs-curation`.
+Mutation-capable MCP tools such as `source_upsert`, `source_context_upsert`, `learning_save`, `refresh_due`, and `fetch` belong to `aiocs-curation`.
 
 ## Recommended Codex workflow
 
 1. If runtime health is in doubt, run `doctor`.
-2. Run `source_list` to see whether the source already exists.
-3. Use `search` in `auto` mode first, then `show` for the selected chunk.
-4. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
-5. If the source is missing or stale and the next step is to mutate `aiocs`, load `aiocs-curation`.
-6. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
+2. Run `source_list` or `source_describe` to see whether the source already exists and what it covers.
+3. Use `page_list` when the question is likely page-oriented, or `search` when chunk recall is the fastest shortlist path.
+4. Use `retrieve` when the answer should be grounded in full-page reads rather than isolated chunks.
+5. Use `page_show` when you already know the exact page to read.
+6. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
+7. If the source is missing or stale and the next step is to mutate `aiocs`, load `aiocs-curation`.
+8. Use `batch` when combining describe/page-list/search/show or diff/coverage checks in one pass.
 
 ## Operational notes
 
@@ -152,6 +182,7 @@ Mutation-capable MCP tools such as `source_upsert`, `refresh_due`, and `fetch` b
 - Default state root: `~/.aiocs/data`, `~/.aiocs/config`, and `~/.aiocs/sources`.
 - Use `aiocs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
 - `aiocs search --mode auto` is the right default for agents; it uses hybrid retrieval only when embeddings are current and healthy for the requested scope.
+- `aiocs retrieve` is the right default when the agent should answer from the best full document, not just the top chunk.
 - The Docker Compose stack includes a dedicated `aiocs-qdrant` container and expects Ollama to be reachable separately.
 - Canaries are the first place to look when a docs site changed and fetches started degrading.
 - Newly added or changed sources become due immediately, so `refresh due <source-id>` is the safe first refresh path after upsert.

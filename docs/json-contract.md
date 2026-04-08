@@ -47,11 +47,16 @@ All of these support the root-level `--json` flag:
 - `doctor`
 - `source upsert`
 - `source list`
+- `source describe`
+- `source context show`
+- `source context upsert`
 - `fetch`
 - `canary`
 - `refresh due`
 - `snapshot list`
 - `diff`
+- `page list`
+- `page show`
 - `project link`
 - `project unlink`
 - `backup export`
@@ -61,6 +66,9 @@ All of these support the root-level `--json` flag:
 - `embeddings clear`
 - `embeddings run`
 - `search`
+- `retrieve`
+- `learning save`
+- `learning list`
 - `verify coverage`
 - `show`
 
@@ -177,6 +185,63 @@ Summary status values:
 }
 ```
 
+### `source.describe`
+
+```json
+{
+  "source": {
+    "id": "hyperliquid",
+    "kind": "web",
+    "label": "Hyperliquid",
+    "specPath": "/absolute/path/to/spec.yaml"
+  },
+  "context": {
+    "sourceId": "hyperliquid",
+    "context": {
+      "purpose": "Primary exchange docs",
+      "summary": "Use for exchange API and auth questions.",
+      "topicHints": ["authentication", "orders"],
+      "commonLocations": [],
+      "gotchas": [],
+      "authNotes": []
+    },
+    "createdAt": "2026-04-08T12:00:00.000Z",
+    "updatedAt": "2026-04-08T12:00:00.000Z"
+  },
+  "latestSnapshot": {
+    "snapshotId": "snp_...",
+    "detectedVersion": null,
+    "createdAt": "2026-04-08T12:05:00.000Z",
+    "pageCount": 139
+  },
+  "recentLearnings": []
+}
+```
+
+### `source.context.show` and `source.context.upsert`
+
+```json
+{
+  "sourceId": "hyperliquid",
+  "context": {
+    "purpose": "Primary exchange docs",
+    "summary": "Use for exchange API and auth questions.",
+    "topicHints": ["authentication", "orders"],
+    "commonLocations": [
+      {
+        "label": "Auth reference",
+        "url": "https://example.dev/docs/auth",
+        "note": "Start here for API setup questions."
+      }
+    ],
+    "gotchas": ["Read the full page before answering from isolated chunks."],
+    "authNotes": ["Wallet signing docs are separate from trader docs."]
+  },
+  "createdAt": "2026-04-08T12:00:00.000Z",
+  "updatedAt": "2026-04-08T12:00:00.000Z"
+}
+```
+
 ### `fetch` and `refresh.due`
 
 ```json
@@ -236,6 +301,46 @@ Summary status values:
 }
 ```
 
+### `page.list`
+
+```json
+{
+  "sourceId": "hyperliquid",
+  "snapshotId": "snp_...",
+  "total": 2,
+  "limit": 50,
+  "offset": 0,
+  "hasMore": false,
+  "pages": [
+    {
+      "url": "https://example.dev/docs/start",
+      "title": "Docs Start",
+      "pageKind": "document",
+      "filePath": null,
+      "language": null,
+      "markdownLength": 245
+    }
+  ]
+}
+```
+
+### `page.show`
+
+```json
+{
+  "sourceId": "hyperliquid",
+  "snapshotId": "snp_...",
+  "page": {
+    "url": "https://example.dev/docs/start",
+    "title": "Docs Start",
+    "markdown": "# Docs Start\n\nFull page content...",
+    "pageKind": "document",
+    "filePath": null,
+    "language": null
+  }
+}
+```
+
 ### `project.link` and `project.unlink`
 
 ```json
@@ -280,6 +385,97 @@ Summary status values:
         "addedLineCount": 3,
         "removedLineCount": 2
       }
+    }
+  ]
+}
+```
+
+### `retrieve`
+
+```json
+{
+  "query": "where is maker flow documented",
+  "modeRequested": "lexical",
+  "modeUsed": "lexical",
+  "sourceScope": ["hyperliquid"],
+  "sourceHints": [
+    {
+      "sourceId": "hyperliquid",
+      "score": 2,
+      "context": {
+        "purpose": "Primary exchange docs",
+        "summary": "Use for exchange API and auth questions.",
+        "topicHints": ["maker flow"],
+        "commonLocations": [],
+        "gotchas": [],
+        "authNotes": []
+      },
+      "matchedCommonLocations": []
+    }
+  ],
+  "matchedLearnings": [],
+  "avoidedLearnings": [],
+  "search": {
+    "total": 1,
+    "limit": 20,
+    "offset": 0,
+    "hasMore": false,
+    "results": []
+  },
+  "pages": [
+    {
+      "sourceId": "hyperliquid",
+      "snapshotId": "snp_...",
+      "url": "https://example.dev/docs/start",
+      "title": "Docs Start",
+      "markdown": "# Docs Start\n\nFull page content...",
+      "pageKind": "document",
+      "filePath": null,
+      "language": null
+    }
+  ]
+}
+```
+
+### `learning.save`
+
+```json
+{
+  "learning": {
+    "learningId": "rte_...",
+    "sourceId": "hyperliquid",
+    "snapshotId": "snp_...",
+    "learningType": "discovery",
+    "intent": "where is maker flow documented",
+    "pageUrl": "https://example.dev/docs/start",
+    "filePath": null,
+    "title": "Docs Start",
+    "note": "Start here for maker-flow docs questions.",
+    "searchTerms": ["maker flow"],
+    "createdAt": "2026-04-08T12:00:00.000Z",
+    "updatedAt": "2026-04-08T12:00:00.000Z"
+  }
+}
+```
+
+### `learning.list`
+
+```json
+{
+  "learnings": [
+    {
+      "learningId": "rte_...",
+      "sourceId": "hyperliquid",
+      "snapshotId": "snp_...",
+      "learningType": "discovery",
+      "intent": "where is maker flow documented",
+      "pageUrl": "https://example.dev/docs/start",
+      "filePath": null,
+      "title": "Docs Start",
+      "note": "Start here for maker-flow docs questions.",
+      "searchTerms": ["maker flow"],
+      "createdAt": "2026-04-08T12:00:00.000Z",
+      "updatedAt": "2026-04-08T12:00:00.000Z"
     }
   ]
 }
