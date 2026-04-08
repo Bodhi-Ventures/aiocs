@@ -12,8 +12,6 @@ Use this skill when you need authoritative local documentation lookup through th
 - The user is asking about exchange or product docs that may already exist in the local `aiocs` catalog.
 - You need authoritative local docs for an exchange, SDK, or product without browsing the live site every time.
 - You need reusable reference search over a curated external git repository that already lives in `aiocs`.
-- You need to read from a compiled `aiocs` workspace wiki or inspect derived workspace artifacts.
-- You need to inspect workspace status, queued compile health, or raw ingested evidence before deciding whether curation is needed.
 - You want machine-readable search/show/diff/coverage results for an AI agent.
 - You need hybrid docs retrieval with lexical plus semantic/vector recall.
 - You need to validate runtime health before relying on the local docs catalog.
@@ -79,18 +77,6 @@ Inspect a specific chunk:
 docs --json show 42
 ```
 
-Search or inspect a compiled workspace:
-
-```bash
-docs --json workspace status market-structure
-docs --json workspace search market-structure "transport design" --scope mixed
-docs --json workspace ingest list market-structure
-docs --json workspace ingest search market-structure "fee tier"
-docs --json workspace artifact list market-structure
-docs --json workspace artifact show market-structure derived/index.md
-docs --json workspace lint market-structure
-```
-
 Inspect source availability and health:
 
 ```bash
@@ -146,15 +132,6 @@ The `aiocs-mcp` server exposes the same core operations without shell parsing:
 - `backup_import`
 - `search`
 - `show`
-- `workspace_list`
-- `workspace_status`
-- `workspace_search`
-- `workspace_ingest_list`
-- `workspace_ingest_show`
-- `workspace_ingest_search`
-- `workspace_artifact_list`
-- `workspace_artifact_show`
-- `workspace_lint`
 - `verify_coverage`
 - `batch`
 
@@ -165,10 +142,9 @@ Mutation-capable MCP tools such as `source_upsert`, `refresh_due`, and `fetch` b
 1. If runtime health is in doubt, run `doctor`.
 2. Run `source_list` to see whether the source already exists.
 3. Use `search` in `auto` mode first, then `show` for the selected chunk.
-4. If the user is asking against a compiled research wiki, prefer `workspace_search` and `workspace_artifact_show`.
-5. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
-6. If the source is missing or stale and the next step is to mutate `aiocs`, load `aiocs-curation`.
-7. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
+4. Use `canary`, `diff_snapshots`, or `verify_coverage` when the question is about drift, changes, or completeness.
+5. If the source is missing or stale and the next step is to mutate `aiocs`, load `aiocs-curation`.
+6. Use `batch` when combining list/search/show or diff/coverage checks in one pass.
 
 ## Operational notes
 
@@ -177,7 +153,6 @@ Mutation-capable MCP tools such as `source_upsert`, `refresh_due`, and `fetch` b
 - Use `docs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
 - `docs search --mode auto` is the right default for agents; it uses hybrid retrieval only when embeddings are current and healthy for the requested scope.
 - The Docker Compose stack includes a dedicated `aiocs-qdrant` container and expects Ollama to be reachable separately.
-- Compiled research workspaces use LM Studio as the v1 compiler backend and expect `google/gemma-4-26b-a4b` to be loaded unless the environment overrides it.
 - Canaries are the first place to look when a docs site changed and fetches started degrading.
 - Newly added or changed sources become due immediately, so `refresh due <source-id>` is the safe first refresh path after upsert.
 - CLI failures expose machine-readable `error.code` fields in `--json` mode.

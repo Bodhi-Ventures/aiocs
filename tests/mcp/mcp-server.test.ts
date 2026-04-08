@@ -5,13 +5,13 @@ import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import packageJson from '../../package.json' with { type: 'json' };
 import { startDocsServer } from '../helpers/docs-server.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const srcMcpPath = `${repoRoot}/src/mcp-server.ts`;
+const distMcpPath = `${repoRoot}/dist/mcp-server.js`;
 
 function writeSourceSpec(specPath: string, id: string, label: string) {
   writeFileSync(specPath, `
@@ -60,6 +60,13 @@ function toolData<T>(result: Record<string, unknown>): T {
 describe('mcp server', () => {
   let root: string;
 
+  beforeAll(async () => {
+    const { execa } = await import('execa');
+    await execa('pnpm', ['build'], {
+      cwd: repoRoot,
+    });
+  });
+
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'aiocs-mcp-'));
   });
@@ -99,7 +106,7 @@ schedule:
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: ['--import', 'tsx', srcMcpPath],
+      args: [distMcpPath],
       cwd: repoRoot,
       env: stringEnv({
         AIOCS_DATA_DIR: join(root, 'data'),

@@ -3,19 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const { compileWithLmStudioMock } = vi.hoisted(() => ({
-  compileWithLmStudioMock: vi.fn(),
-}));
-
-vi.mock('../../src/workspace/lmstudio.js', async () => {
-  const actual = await vi.importActual<typeof import('../../src/workspace/lmstudio.js')>('../../src/workspace/lmstudio.js');
-  return {
-    ...actual,
-    compileWithLmStudio: compileWithLmStudioMock,
-  };
-});
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openCatalog } from '../../src/catalog/catalog.js';
 import { startDocsServer } from '../helpers/docs-server.js';
@@ -73,11 +61,6 @@ describe('daemon runtime', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'aiocs-daemon-'));
-    compileWithLmStudioMock.mockReset();
-    compileWithLmStudioMock.mockResolvedValue({
-      model: 'google/gemma-4-26b-a4b',
-      content: '# Generated\n\nCompiled workspace artifact.',
-    });
   });
 
   afterEach(() => {
@@ -259,132 +242,6 @@ describe('daemon runtime', () => {
           reused: false,
         }),
       ]);
-    } finally {
-      catalog.close();
-      await server.close();
-    }
-  });
-
-  it('auto-compiles opted-in workspaces after a source refresh changes snapshots', async () => {
-    const server = await startDocsServer();
-    const specDir = join(root, 'specs');
-    const dataDir = join(root, 'data');
-    mkdirSync(specDir, { recursive: true });
-    writeSelectorSpec(specDir, server.baseUrl, 'daemon-workspace');
-
-    const catalog = openCatalog({ dataDir });
-
-    try {
-      await bootstrapSourceSpecs({
-        catalog,
-        sourceSpecDirs: [specDir],
-      });
-
-      catalog.createWorkspace({
-        id: 'auto-workspace',
-        label: 'Auto Workspace',
-        compilerProfile: {
-          provider: 'lmstudio',
-          model: 'google/gemma-4-26b-a4b',
-          temperature: 0.1,
-          topP: 0.9,
-          maxInputChars: 12_000,
-          maxOutputTokens: 4_096,
-          concurrency: 1,
-        },
-        defaultOutputFormats: ['report'],
-        autoCompileEnabled: true,
-      });
-      catalog.bindWorkspaceSources('auto-workspace', ['daemon-workspace']);
-
-      const db = new Database(join(dataDir, 'catalog.sqlite'));
-      db.prepare('UPDATE sources SET next_due_at = ? WHERE id = ?').run(
-        '2000-01-01T00:00:00.000Z',
-        'daemon-workspace',
-      );
-      db.close();
-
-      const result = await runDaemonCycle({
-        catalog,
-        dataDir,
-        sourceSpecDirs: [specDir],
-      });
-
-      expect(result.workspaceQueued).toEqual(['auto-workspace']);
-      expect(result.workspaceCompiled).toEqual([
-        expect.objectContaining({
-          workspaceId: 'auto-workspace',
-          changedSourceIds: ['daemon-workspace'],
-        }),
-      ]);
-      expect(catalog.listWorkspaceArtifacts('auto-workspace').map((artifact) => artifact.path)).toEqual([
-        'derived/concepts/daemon-workspace.md',
-        'derived/index.md',
-        'derived/sources/daemon-workspace/summary.md',
-      ]);
-    } finally {
-      catalog.close();
-      await server.close();
-    }
-  });
-
-  it('skips auto-compile queueing when another bound source still lacks snapshots', async () => {
-    const server = await startDocsServer();
-    const specDir = join(root, 'specs');
-    const dataDir = join(root, 'data');
-    mkdirSync(specDir, { recursive: true });
-    writeSelectorSpec(specDir, server.baseUrl, 'daemon-ready-source');
-    writeSelectorSpec(specDir, server.baseUrl, 'daemon-missing-source', 24, '/selector-v2/start');
-
-    const catalog = openCatalog({ dataDir });
-
-    try {
-      await bootstrapSourceSpecs({
-        catalog,
-        sourceSpecDirs: [specDir],
-      });
-
-      catalog.createWorkspace({
-        id: 'mixed-snapshot-workspace',
-        label: 'Mixed Snapshot Workspace',
-        compilerProfile: {
-          provider: 'lmstudio',
-          model: 'google/gemma-4-26b-a4b',
-          temperature: 0.1,
-          topP: 0.9,
-          maxInputChars: 12_000,
-          maxOutputTokens: 4_096,
-          concurrency: 1,
-        },
-        defaultOutputFormats: ['report'],
-        autoCompileEnabled: true,
-      });
-      catalog.bindWorkspaceSources('mixed-snapshot-workspace', [
-        'daemon-ready-source',
-        'daemon-missing-source',
-      ]);
-
-      const db = new Database(join(dataDir, 'catalog.sqlite'));
-      db.prepare('UPDATE sources SET next_due_at = ? WHERE id = ?').run(
-        '2000-01-01T00:00:00.000Z',
-        'daemon-ready-source',
-      );
-      db.prepare('UPDATE sources SET next_due_at = ? WHERE id = ?').run(
-        '2999-01-01T00:00:00.000Z',
-        'daemon-missing-source',
-      );
-      db.close();
-
-      const result = await runDaemonCycle({
-        catalog,
-        dataDir,
-        sourceSpecDirs: [specDir],
-      });
-
-      expect(result.workspaceQueued).toEqual([]);
-      expect(result.workspaceCompiled).toEqual([]);
-      expect(result.workspaceCompileFailed).toEqual([]);
-      expect(catalog.getWorkspaceCompileJob('mixed-snapshot-workspace')).toBeNull();
     } finally {
       catalog.close();
       await server.close();

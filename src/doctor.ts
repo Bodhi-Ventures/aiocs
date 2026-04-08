@@ -10,7 +10,6 @@ import { getAiocsConfigDir, getAiocsDataDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getHybridRuntimeConfig } from './runtime/hybrid-config.js';
 import { pathExists, walkSourceSpecFiles } from './spec/source-spec-files.js';
-import { getLmStudioCompilerStatus } from './workspace/lmstudio.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +25,6 @@ export type DoctorCheck = {
     | 'source-spec-dirs'
     | 'freshness'
     | 'daemon-heartbeat'
-    | 'lmstudio'
     | 'embedding-provider'
     | 'vector-store'
     | 'embeddings'
@@ -369,33 +367,6 @@ async function checkDaemonHeartbeat(env: NodeJS.ProcessEnv): Promise<DoctorCheck
   }
 }
 
-async function checkLmStudio(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
-  try {
-    const status = await getLmStudioCompilerStatus(env);
-    if (!status.modelLoaded) {
-      return {
-        id: 'lmstudio',
-        status: 'warn',
-        summary: `LM Studio is reachable but model ${status.configuredModel} is not loaded.`,
-        details: status,
-      };
-    }
-
-    return {
-      id: 'lmstudio',
-      status: 'pass',
-      summary: `LM Studio is ready with model ${status.configuredModel}.`,
-      details: status,
-    };
-  } catch (error) {
-    return {
-      id: 'lmstudio',
-      status: 'fail',
-      summary: `LM Studio compiler is not ready: ${toErrorMessage(error)}`,
-    };
-  }
-}
-
 async function checkEmbeddingProvider(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
   try {
     const config = getHybridRuntimeConfig(env);
@@ -529,7 +500,6 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<D
   const sourceSpecDirsCheck = await checkSourceSpecDirs(daemonConfig);
   const freshnessCheck = await checkFreshness(env);
   const daemonHeartbeatCheck = await checkDaemonHeartbeat(env);
-  const lmStudioCheck = await checkLmStudio(env);
   const embeddingProviderCheck = await checkEmbeddingProvider(env);
   const vectorStoreCheck = await checkVectorStore(env);
   const embeddingsCheck = await checkEmbeddings(env);
@@ -542,7 +512,6 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<D
     sourceSpecDirsCheck,
     freshnessCheck,
     daemonHeartbeatCheck,
-    lmStudioCheck,
     embeddingProviderCheck,
     vectorStoreCheck,
     embeddingsCheck,

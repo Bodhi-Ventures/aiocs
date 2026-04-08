@@ -37,57 +37,6 @@ export function getAiocsGitMirrorsDir(env: NodeJS.ProcessEnv = process.env): str
   return target;
 }
 
-export function getAiocsWorkspacesDir(env: NodeJS.ProcessEnv = process.env): string {
-  const target = join(getAiocsDataDir(env), 'workspaces');
-  mkdirSync(target, { recursive: true });
-  return target;
-}
-
-export function getAiocsWorkspaceRootDir(
-  workspaceId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const target = join(getAiocsWorkspacesDir(env), workspaceId);
-  mkdirSync(target, { recursive: true });
-  return target;
-}
-
-export function getAiocsWorkspaceRawDir(
-  workspaceId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const target = join(getAiocsWorkspaceRootDir(workspaceId, env), 'raw');
-  mkdirSync(target, { recursive: true });
-  return target;
-}
-
-export function getAiocsWorkspaceDerivedDir(
-  workspaceId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const target = join(getAiocsWorkspaceRootDir(workspaceId, env), 'derived');
-  mkdirSync(target, { recursive: true });
-  return target;
-}
-
-export function getAiocsWorkspaceOutputsDir(
-  workspaceId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const target = join(getAiocsWorkspaceRootDir(workspaceId, env), 'outputs');
-  mkdirSync(target, { recursive: true });
-  return target;
-}
-
-export function getAiocsWorkspaceManifestsDir(
-  workspaceId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const target = join(getAiocsWorkspaceRootDir(workspaceId, env), 'manifests');
-  mkdirSync(target, { recursive: true });
-  return target;
-}
-
 export function getAiocsConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.AIOCS_CONFIG_DIR;
   if (override) {

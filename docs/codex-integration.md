@@ -46,7 +46,6 @@ command = "aiocs-mcp"
 9. Prefer `refresh due <source-id>` over force `fetch <source-id>` when the source already exists.
 10. Use MCP `batch` when multiple list/search/show or search/diff/coverage steps are needed.
 11. Cite `sourceId`, `snapshotId`, and `pageUrl` when they materially improve traceability.
-12. If the user is operating on a compiled research workspace, prefer `workspace_search` and `workspace_artifact_show` over raw source search.
 
 ## Automatic use in Codex
 
@@ -114,27 +113,6 @@ docs --json diff hyperliquid
 docs --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
-Research workspaces:
-
-```bash
-docs --json workspace create market-structure --label "Market Structure" --auto-compile
-docs --json workspace bind market-structure hyperliquid nktkas-hyperliquid
-docs --json workspace compile market-structure
-docs --json workspace queue-run
-docs --json workspace search market-structure "transport design" --scope mixed
-docs --json workspace artifact show market-structure derived/index.md
-docs --json workspace lint market-structure
-docs --json workspace output market-structure report --name weekly-brief
-docs --json workspace answer market-structure note "What changed in websocket transport?" --name websocket-note
-docs --json workspace ingest add market-structure markdown-dir /absolute/path/to/notes --label "Research notes"
-docs --json workspace ingest add market-structure csv /absolute/path/to/fills.csv --label "Fills CSV"
-docs --json workspace ingest add market-structure json /absolute/path/to/manifest.json --label "Research manifest"
-docs --json workspace ingest add market-structure jsonl /absolute/path/to/events.jsonl --label "Events JSONL"
-docs --json workspace sync obsidian market-structure /absolute/path/to/vault
-```
-
-If bound source snapshots have changed since the last compile, rerun `workspace compile` before `workspace output`. The output path now fails closed on stale derived artifacts instead of synthesizing reports from outdated summaries.
-
 Catalog maintenance:
 
 ```bash
@@ -156,26 +134,8 @@ If a Codex agent has access to the `aiocs-mcp` server, prefer these MCP tools ov
 - `diff_snapshots`
 - `verify_coverage`
 - `embeddings_status`
-- `workspace_list`
-- `workspace_status`
-- `workspace_search`
-- `workspace_ingest_list`
-- `workspace_ingest_search`
-- `workspace_artifact_list`
-- `workspace_artifact_show`
-- `workspace_lint`
 - `batch`
 
-Use mutating tools such as `source_upsert`, `refresh_due`, `fetch`, `workspace_create`, `workspace_bind`, `workspace_compile`, and `workspace_output` only through the `aiocs-curation` workflow.
-
-## LM Studio requirement for workspaces
-
-Workspace compilation and output generation use LM Studio in v1. Codex should assume:
-
-- provider: LM Studio
-- model: `google/gemma-4-26b-a4b`
-- default API endpoint: `ws://127.0.0.1:1234`
-
-If `doctor` reports the `lmstudio` check as `warn` or `fail`, Codex should not claim workspace compilation is available until LM Studio is running and the configured model is loaded.
+Use mutating tools such as `source_upsert`, `refresh_due`, and `fetch` only through the `aiocs-curation` workflow.
 
 The CLI remains the fallback and should always be invoked with `--json` for agent use. For normal answering flows, avoid `fetch all`; use targeted due refresh or explicit user-approved force fetches.

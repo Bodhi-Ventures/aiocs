@@ -10,7 +10,6 @@ import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getAiocsSourcesDir } from './runtime/paths.js';
 import { getHybridRuntimeConfig } from './runtime/hybrid-config.js';
 import { pathExists, uniqueResolvedPaths, walkSourceSpecFiles } from './spec/source-spec-files.js';
-import { enqueueWorkspaceCompileIfEligible, processQueuedWorkspaceCompileJobs } from './workspace/queue.js';
 
 const DEFAULT_INTERVAL_MINUTES = 60;
 const DEFAULT_CONTAINER_SOURCE_DIR = '/app/sources';
@@ -89,17 +88,6 @@ export type DaemonCycleResult = {
   failed: FailedRefresh[];
   embedded: EmbeddedSnapshot[];
   embeddingFailed: FailedEmbedding[];
-  workspaceQueued: string[];
-  workspaceCompiled: Array<{
-    workspaceId: string;
-    sourceFingerprint: string;
-    changedSourceIds: string[];
-    changedRawInputIds: string[];
-  }>;
-  workspaceCompileFailed: Array<{
-    workspaceId: string;
-    errorMessage: string;
-  }>;
 };
 
 export type DaemonEvent =
@@ -304,7 +292,6 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
   const failed: FailedRefresh[] = [];
   const embedded: EmbeddedSnapshot[] = [];
   const embeddingFailed: FailedEmbedding[] = [];
-  const workspaceQueued = new Set<string>();
 
   for (const sourceId of canaryDueSourceIds) {
     try {
@@ -371,26 +358,6 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
     });
   }
 
-  const changedSourceIds = refreshed
-    .filter((result) => result.reused === false)
-    .map((result) => result.sourceId);
-  const autoCompileWorkspaceIds = input.catalog.listAutoCompileWorkspaceIdsForSources(changedSourceIds);
-  for (const workspaceId of autoCompileWorkspaceIds) {
-    const queued = enqueueWorkspaceCompileIfEligible({
-      catalog: input.catalog,
-      workspaceId,
-      sourceIds: changedSourceIds,
-    });
-    if (queued.enqueued) {
-      workspaceQueued.add(workspaceId);
-    }
-  }
-  const workspaceCompileResult = await processQueuedWorkspaceCompileJobs({
-    catalog: input.catalog,
-    dataDir: input.dataDir,
-    env: process.env,
-  });
-
   return {
     startedAt,
     finishedAt: nowIso(),
@@ -403,9 +370,6 @@ export async function runDaemonCycle(input: RunDaemonCycleInput): Promise<Daemon
     failed,
     embedded,
     embeddingFailed,
-    workspaceQueued: [...workspaceQueued].sort(),
-    workspaceCompiled: workspaceCompileResult.succeededJobs,
-    workspaceCompileFailed: workspaceCompileResult.failedJobs,
   };
 }
 
@@ -442,10 +406,7 @@ export async function startDaemon(input: StartDaemonInput): Promise<void> {
       });
       input.catalog.markDaemonCycleCompleted({
         completedAt: result.finishedAt,
-        status: result.failed.length > 0
-          || result.canaryFailed.length > 0
-          || result.embeddingFailed.length > 0
-          || result.workspaceCompileFailed.length > 0
+        status: result.failed.length > 0 || result.canaryFailed.length > 0 || result.embeddingFailed.length > 0
           ? 'degraded'
           : 'success',
       });
