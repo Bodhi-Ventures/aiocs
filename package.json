@@ -1,6 +1,6 @@
 {
   "name": "@bodhi-ventures/aiocs",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "MIT",
   "type": "module",
   "description": "Local-only documentation store, fetcher, and search CLI for AI agents.",
