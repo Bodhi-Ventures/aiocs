@@ -65,7 +65,7 @@ Once those symlinks exist, Codex can load `aiocs` for normal local-doc lookup an
 ## Subagent options
 
 The repo ships a ready-to-copy specialist definition at
-[`agents/aiocs-docs-specialist.toml`](../agents/aiocs-docs-specialist.toml).
+[`agents/aiocs-specialist.toml`](../agents/aiocs-specialist.toml).
 
 It points at the globally installed `aiocs-mcp` binary so Codex uses the published package by default.
 
@@ -74,7 +74,7 @@ To expose that agent to Codex:
 ```bash
 AIOCS_REPO=/absolute/path/to/your/aiocs/checkout
 mkdir -p ~/.codex/agents
-ln -sfn "$AIOCS_REPO/agents/aiocs-docs-specialist.toml" ~/.codex/agents/aiocs-docs-specialist.toml
+ln -sfn "$AIOCS_REPO/agents/aiocs-specialist.toml" ~/.codex/agents/aiocs-specialist.toml
 ```
 
 ## Suggested Codex flows
@@ -86,7 +86,7 @@ aiocs --json doctor
 aiocs --json init --no-fetch
 ```
 
-Local docs lookup:
+Local aiocs lookup:
 
 ```bash
 aiocs --json source list

@@ -33,7 +33,7 @@ Use this skill when you need authoritative local documentation lookup through th
 1. Prefer `aiocs-mcp` when an MCP client can use it directly.
 2. Otherwise use the CLI with the root `--json` flag.
 3. Avoid parsing human-formatted CLI output unless there is no alternative.
-4. Assume `docs` and `aiocs-mcp` come from the globally installed `@bodhi-ventures/aiocs` package unless the user explicitly asks for a checkout-local development build.
+4. Assume `aiocs` and `aiocs-mcp` come from the globally installed `@bodhi-ventures/aiocs` package unless the user explicitly asks for a checkout-local development build.
 5. Use `npx -y -p @bodhi-ventures/aiocs ...` only as a fallback when the global install is unavailable.
 
 ## Search defaults for agents

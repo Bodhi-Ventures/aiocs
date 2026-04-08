@@ -48,7 +48,7 @@ describe('release assets', () => {
     const codexIntegrationPath = join(repoRoot, 'docs', 'codex-integration.md');
     const skillPath = join(repoRoot, 'skills', 'aiocs', 'SKILL.md');
     const curationSkillPath = join(repoRoot, 'skills', 'aiocs-curation', 'SKILL.md');
-    const agentPath = join(repoRoot, 'agents', 'aiocs-docs-specialist.toml');
+    const agentPath = join(repoRoot, 'agents', 'aiocs-specialist.toml');
 
     expect(existsSync(licensePath)).toBe(true);
     expect(readFileSync(licensePath, 'utf8')).toContain('MIT License');
@@ -79,7 +79,7 @@ describe('release assets', () => {
 
     expect(existsSync(agentPath)).toBe(true);
     const agent = readFileSync(agentPath, 'utf8');
-    expect(agent).toContain('aiocs_docs_specialist');
+    expect(agent).toContain('aiocs_specialist');
     expect(agent).toContain('aiocs-mcp');
 
     const readmePath = join(repoRoot, 'README.md');

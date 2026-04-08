@@ -30,7 +30,7 @@ Use this skill when you need to add, refresh, repair, or otherwise mutate `aiocs
 
 1. Prefer `aiocs-mcp` when an MCP client can use it directly.
 2. Otherwise use the CLI with the root `--json` flag.
-3. Assume `docs` and `aiocs-mcp` come from the globally installed `@bodhi-ventures/aiocs` package unless the user explicitly asks for a checkout-local development build.
+3. Assume `aiocs` and `aiocs-mcp` come from the globally installed `@bodhi-ventures/aiocs` package unless the user explicitly asks for a checkout-local development build.
 4. Use `npx -y -p @bodhi-ventures/aiocs ...` only as a fallback when the global install is unavailable.
 
 ## User-managed sources

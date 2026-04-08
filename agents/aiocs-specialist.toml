@@ -1,5 +1,5 @@
-name = "aiocs_docs_specialist"
-description = "Local aiocs catalog documentation specialist for aiocs-backed search, canaries, diffs, coverage checks, and catalog health."
+name = "aiocs_specialist"
+description = "Local aiocs catalog specialist for aiocs-backed search, canaries, diffs, coverage checks, and catalog health."
 model = "gpt-5.4-mini"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
