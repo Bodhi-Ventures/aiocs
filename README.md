@@ -30,15 +30,15 @@ For testing or local overrides, set:
 
 ```bash
 npm install -g @bodhi-ventures/aiocs
-docs --version
-docs --help
+aiocs --version
+aiocs --help
 command -v aiocs-mcp
 ```
 
 Zero-install fallback:
 
 ```bash
-npx -y -p @bodhi-ventures/aiocs docs --version
+npx -y -p @bodhi-ventures/aiocs aiocs --version
 npx -y -p @bodhi-ventures/aiocs aiocs-mcp
 ```
 
@@ -54,12 +54,12 @@ pnpm dev:mcp
 For AI agents, prefer the root-level `--json` flag for one-shot commands:
 
 ```bash
-docs --json version
-docs --json doctor
-docs --json init --no-fetch
-docs --json source list
-docs --json search "maker flow" --source hyperliquid
-docs --json show 42
+aiocs --json version
+aiocs --json doctor
+aiocs --json init --no-fetch
+aiocs --json source list
+aiocs --json search "maker flow" --source hyperliquid
+aiocs --json show 42
 ```
 
 `--json` emits exactly one JSON document to stdout with this envelope:
@@ -127,21 +127,21 @@ The open-source repo bundles both web and git sources in `sources/`:
 
 Additional machine-local source specs belong in `~/.aiocs/sources`.
 
-`docs init` bootstraps both managed locations, so source behavior is the same regardless of
+`aiocs init` bootstraps both managed locations, so source behavior is the same regardless of
 whether a spec lives in the repo or in `~/.aiocs/sources`.
 
 Bootstrap managed sources in one command:
 
 ```bash
-docs init --no-fetch
-docs --json init --no-fetch
+aiocs init --no-fetch
+aiocs --json init --no-fetch
 ```
 
 Validate the machine before bootstrapping:
 
 ```bash
-docs doctor
-docs --json doctor
+aiocs doctor
+aiocs --json doctor
 ```
 
 ## Workflow
@@ -151,54 +151,54 @@ Register a source:
 ```bash
 mkdir -p ~/.aiocs/sources
 cp /path/to/source.yaml ~/.aiocs/sources/my-source.yaml
-docs source upsert ~/.aiocs/sources/my-source.yaml
-docs source upsert /path/to/source.yaml
-docs source list
+aiocs source upsert ~/.aiocs/sources/my-source.yaml
+aiocs source upsert /path/to/source.yaml
+aiocs source list
 ```
 
 Fetch and snapshot docs:
 
 ```bash
-docs refresh due hyperliquid
-docs snapshot list hyperliquid
-docs refresh due
+aiocs refresh due hyperliquid
+aiocs snapshot list hyperliquid
+aiocs refresh due
 ```
 
 Force fetch remains available for explicit maintenance:
 
 ```bash
-docs fetch hyperliquid
-docs fetch all
+aiocs fetch hyperliquid
+aiocs fetch all
 ```
 
 Link docs to a local project:
 
 ```bash
-docs project link /absolute/path/to/project hyperliquid lighter
-docs project unlink /absolute/path/to/project lighter
+aiocs project link /absolute/path/to/project hyperliquid lighter
+aiocs project unlink /absolute/path/to/project lighter
 ```
 
 Search and inspect results:
 
 ```bash
-docs search "maker flow" --source hyperliquid
-docs search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript
-docs search "maker flow" --source hyperliquid --mode lexical
-docs search "maker flow" --source hyperliquid --mode hybrid
-docs search "maker flow" --source hyperliquid --mode semantic
-docs search "maker flow" --all
-docs search "maker flow" --source hyperliquid --limit 5 --offset 0
-docs show 42
-docs canary hyperliquid
-docs diff hyperliquid
-docs embeddings status
-docs embeddings backfill all
-docs embeddings run
-docs backup export /absolute/path/to/backup
-docs verify coverage hyperliquid /absolute/path/to/reference.md
+aiocs search "maker flow" --source hyperliquid
+aiocs search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript
+aiocs search "maker flow" --source hyperliquid --mode lexical
+aiocs search "maker flow" --source hyperliquid --mode hybrid
+aiocs search "maker flow" --source hyperliquid --mode semantic
+aiocs search "maker flow" --all
+aiocs search "maker flow" --source hyperliquid --limit 5 --offset 0
+aiocs show 42
+aiocs canary hyperliquid
+aiocs diff hyperliquid
+aiocs embeddings status
+aiocs embeddings backfill all
+aiocs embeddings run
+aiocs backup export /absolute/path/to/backup
+aiocs verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
-When `docs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
+When `aiocs search` runs inside a linked project, it automatically scopes to that project's linked sources unless `--source` or `--all` is provided.
 
 For agents, the intended decision order is:
 
@@ -319,22 +319,22 @@ All one-shot commands support `--json`:
 Representative examples:
 
 ```bash
-docs --json doctor
-docs --json init --no-fetch
-docs --json source list
-docs --json source upsert sources/hyperliquid.yaml
-docs --json refresh due hyperliquid
-docs --json canary hyperliquid
-docs --json refresh due
-docs --json diff hyperliquid
-docs --json embeddings status
-docs --json embeddings backfill all
-docs --json embeddings clear hyperliquid
-docs --json embeddings run
-docs --json project link /absolute/path/to/project hyperliquid lighter
-docs --json snapshot list hyperliquid
-docs --json backup export /absolute/path/to/backup
-docs --json verify coverage hyperliquid /absolute/path/to/reference.md
+aiocs --json doctor
+aiocs --json init --no-fetch
+aiocs --json source list
+aiocs --json source upsert sources/hyperliquid.yaml
+aiocs --json refresh due hyperliquid
+aiocs --json canary hyperliquid
+aiocs --json refresh due
+aiocs --json diff hyperliquid
+aiocs --json embeddings status
+aiocs --json embeddings backfill all
+aiocs --json embeddings clear hyperliquid
+aiocs --json embeddings run
+aiocs --json project link /absolute/path/to/project hyperliquid lighter
+aiocs --json snapshot list hyperliquid
+aiocs --json backup export /absolute/path/to/backup
+aiocs --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 For multi-result commands like `fetch`, `refresh due`, and `search`, `data` contains structured collections rather than line-by-line output:
@@ -361,7 +361,7 @@ For multi-result commands like `fetch`, `refresh due`, and `search`, `data` cont
 `aiocs` ships a first-class long-running refresh process:
 
 ```bash
-docs daemon
+aiocs daemon
 ```
 
 The daemon bootstraps source specs from the configured directories, refreshes due sources, sleeps for the configured interval, and repeats.
@@ -371,7 +371,7 @@ Configured source spec directories are treated as the daemon’s source of truth
 - if a managed source spec is removed from disk, the source is removed from the catalog on the next bootstrap
 - if `AIOCS_SOURCE_SPEC_DIRS` is explicitly set but resolves to missing or empty directories, the daemon fails fast instead of silently idling
 - due canaries run independently from full fetch schedules so drift is caught earlier than the next full snapshot refresh
-- daemon heartbeat state is persisted in the local catalog and surfaced through `docs doctor`
+- daemon heartbeat state is persisted in the local catalog and surfaced through `aiocs doctor`
 - queued embedding jobs are processed in the same daemon cycle after fetches complete
 
 Environment variables:
@@ -389,10 +389,10 @@ For local agents, the daemon keeps the shared catalog under `~/.aiocs` warm whil
 
 ### Daemon JSON mode
 
-`docs daemon --json` is intentionally different from one-shot commands. Because it is long-running, it emits one JSON event per line:
+`aiocs daemon --json` is intentionally different from one-shot commands. Because it is long-running, it emits one JSON event per line:
 
 ```bash
-docs --json daemon
+aiocs --json daemon
 ```
 
 Example event stream:
@@ -488,7 +488,7 @@ docker compose up --build -d
 
 The compose file:
 
-- runs `docs daemon` as the container entrypoint
+- runs `aiocs daemon` as the container entrypoint
 - bind-mounts `${HOME}/.aiocs` into `/root/.aiocs` so the container shares the same local catalog defaults as the host CLI
 - bind-mounts `./sources` into `/app/sources` so source spec edits are picked up without rebuilding
 - runs a dedicated `aiocs-qdrant` container for vector search

@@ -470,7 +470,7 @@ Summary status values:
 
 ## Daemon event stream
 
-`docs daemon --json` is intentionally different because the process is long-running. It emits newline-delimited JSON events to stdout rather than a single envelope.
+`aiocs daemon --json` is intentionally different because the process is long-running. It emits newline-delimited JSON events to stdout rather than a single envelope.
 
 Current event types:
 

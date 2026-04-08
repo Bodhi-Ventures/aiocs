@@ -8,22 +8,22 @@ Install the CLI and MCP binary globally:
 
 ```bash
 npm install -g @bodhi-ventures/aiocs
-docs --version
+aiocs --version
 command -v aiocs-mcp
 ```
 
 If global install is unavailable, use `npx` only as a fallback:
 
 ```bash
-npx -y -p @bodhi-ventures/aiocs docs --version
+npx -y -p @bodhi-ventures/aiocs aiocs --version
 npx -y -p @bodhi-ventures/aiocs aiocs-mcp
 ```
 
 The `aiocs-mcp` process is an MCP stdio server, so running it directly will wait for MCP clients instead of printing interactive help. The useful validation commands are:
 
 ```bash
-docs --json doctor
-docs --json init --no-fetch
+aiocs --json doctor
+aiocs --json init --no-fetch
 ```
 
 Register `aiocs-mcp` as a global Codex MCP server so the main agent can use it directly without shell fallback:
@@ -37,7 +37,7 @@ command = "aiocs-mcp"
 
 1. Prefer `aiocs` before live browsing when the requested docs may already exist locally.
 2. Prefer MCP through `aiocs-mcp` when Codex can use it.
-3. Fall back to `docs --json ...` only when MCP is unavailable.
+3. Fall back to `aiocs --json ...` only when MCP is unavailable.
 4. Check `source_list` before assuming a source is missing or stale.
 5. Default to `search mode=auto`.
 6. Use `mode=lexical` for exact identifiers, endpoint names, headings, and error strings.
@@ -82,17 +82,17 @@ ln -sfn "$AIOCS_REPO/agents/aiocs-docs-specialist.toml" ~/.codex/agents/aiocs-do
 Health and bootstrap:
 
 ```bash
-docs --json doctor
-docs --json init --no-fetch
+aiocs --json doctor
+aiocs --json init --no-fetch
 ```
 
 Local docs lookup:
 
 ```bash
-docs --json source list
-docs --json search "maker flow" --source hyperliquid --mode auto
-docs --json search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript --mode lexical
-docs --json show 42
+aiocs --json source list
+aiocs --json search "maker flow" --source hyperliquid --mode auto
+aiocs --json search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript --mode lexical
+aiocs --json show 42
 ```
 
 Missing or stale sources:
@@ -101,24 +101,24 @@ Missing or stale sources:
 # user-managed source specs live here
 ~/.aiocs/sources
 
-docs --json source upsert ~/.aiocs/sources/my-source.yaml
-docs --json refresh due my-source
+aiocs --json source upsert ~/.aiocs/sources/my-source.yaml
+aiocs --json refresh due my-source
 ```
 
 Drift, change, and completeness:
 
 ```bash
-docs --json canary hyperliquid
-docs --json diff hyperliquid
-docs --json verify coverage hyperliquid /absolute/path/to/reference.md
+aiocs --json canary hyperliquid
+aiocs --json diff hyperliquid
+aiocs --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 Catalog maintenance:
 
 ```bash
-docs --json refresh due hyperliquid
-docs --json embeddings status
-docs --json backup export /absolute/path/to/backup
+aiocs --json refresh due hyperliquid
+aiocs --json embeddings status
+aiocs --json backup export /absolute/path/to/backup
 ```
 
 ## MCP-first guidance

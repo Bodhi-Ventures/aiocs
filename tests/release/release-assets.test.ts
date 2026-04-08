@@ -37,7 +37,7 @@ describe('release assets', () => {
       provenance: true,
     });
     expect(packageManifest.bin).toEqual({
-      docs: './dist/cli.js',
+      aiocs: './dist/cli.js',
       'aiocs-mcp': './dist/mcp-server.js',
     });
   });

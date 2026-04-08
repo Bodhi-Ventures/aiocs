@@ -50,13 +50,13 @@ Use this skill when you need authoritative local documentation lookup through th
 Validate the local runtime:
 
 ```bash
-docs --json doctor
+aiocs --json doctor
 ```
 
 Bootstrap managed sources from the repo bundle and `~/.aiocs/sources`:
 
 ```bash
-docs --json init --no-fetch
+aiocs --json init --no-fetch
 ```
 
 ## Core commands
@@ -64,51 +64,51 @@ docs --json init --no-fetch
 Search the shared catalog:
 
 ```bash
-docs --json search "maker flow" --source hyperliquid
-docs --json search "maker flow" --all
-docs --json search "maker flow" --source hyperliquid --limit 5 --offset 0
-docs --json search "maker flow" --source hyperliquid --mode hybrid
-docs --json search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript --mode lexical
+aiocs --json search "maker flow" --source hyperliquid
+aiocs --json search "maker flow" --all
+aiocs --json search "maker flow" --source hyperliquid --limit 5 --offset 0
+aiocs --json search "maker flow" --source hyperliquid --mode hybrid
+aiocs --json search "WebSocketTransport" --source nktkas-hyperliquid --path "src/**" --language typescript --mode lexical
 ```
 
 Inspect a specific chunk:
 
 ```bash
-docs --json show 42
+aiocs --json show 42
 ```
 
 Inspect source availability and health:
 
 ```bash
-docs --json source list
-docs --json canary hyperliquid
-docs --json embeddings status
+aiocs --json source list
+aiocs --json canary hyperliquid
+aiocs --json embeddings status
 ```
 
 Inspect what changed between snapshots:
 
 ```bash
-docs --json diff hyperliquid
+aiocs --json diff hyperliquid
 ```
 
 Back up or restore the shared catalog:
 
 ```bash
-docs --json backup export /absolute/path/to/backup
-docs --json backup import /absolute/path/to/backup --replace-existing
+aiocs --json backup export /absolute/path/to/backup
+aiocs --json backup import /absolute/path/to/backup --replace-existing
 ```
 
 Verify fetched coverage against reference markdown:
 
 ```bash
-docs --json verify coverage hyperliquid /absolute/path/to/reference.md
+aiocs --json verify coverage hyperliquid /absolute/path/to/reference.md
 ```
 
 Scope docs to a project path:
 
 ```bash
-docs --json project link /absolute/path/to/project hyperliquid lighter
-docs --json project unlink /absolute/path/to/project lighter
+aiocs --json project link /absolute/path/to/project hyperliquid lighter
+aiocs --json project unlink /absolute/path/to/project lighter
 ```
 
 ## MCP tools
@@ -150,8 +150,8 @@ Mutation-capable MCP tools such as `source_upsert`, `refresh_due`, and `fetch` b
 
 - The catalog is local-only and shared across projects on the same machine.
 - Default state root: `~/.aiocs/data`, `~/.aiocs/config`, and `~/.aiocs/sources`.
-- Use `docs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
-- `docs search --mode auto` is the right default for agents; it uses hybrid retrieval only when embeddings are current and healthy for the requested scope.
+- Use `aiocs daemon` or the Docker daemon service when the catalog should stay fresh automatically.
+- `aiocs search --mode auto` is the right default for agents; it uses hybrid retrieval only when embeddings are current and healthy for the requested scope.
 - The Docker Compose stack includes a dedicated `aiocs-qdrant` container and expects Ollama to be reachable separately.
 - Canaries are the first place to look when a docs site changed and fetches started degrading.
 - Newly added or changed sources become due immediately, so `refresh due <source-id>` is the safe first refresh path after upsert.

@@ -220,8 +220,8 @@ function createDaemonLogger(json: boolean): { emit(event: DaemonEvent): void } {
 
 const program = new Command();
 program
-  .name('docs')
-  .description('Local-only docs fetch and search CLI for AI agents.')
+  .name('aiocs')
+  .description('Local-only documentation fetch and search CLI for AI agents.')
   .option('-V, --version', 'emit the current aiocs version')
   .option('--json', 'emit machine-readable JSON output')
   .showHelpAfterError();

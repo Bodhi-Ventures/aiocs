@@ -9,7 +9,7 @@ Use this skill when you need to add, refresh, repair, or otherwise mutate `aiocs
 
 ## When to use it
 
-- The requested docs source is missing from the local `aiocs` catalog and is worth curating for reuse.
+- The requested source is missing from the local `aiocs` catalog and is worth curating for reuse.
 - An existing source is stale and should be refreshed instead of bypassed.
 - A source spec needs to be created, updated, or upserted under `~/.aiocs/sources`.
 - A reusable external git repository should be added as a `kind: git` source under `~/.aiocs/sources`.
@@ -48,33 +48,33 @@ Create or update source specs there instead of editing the bundled repo sources.
 Validate the machine before curation:
 
 ```bash
-docs --json doctor
-docs --json source list
+aiocs --json doctor
+aiocs --json source list
 ```
 
 Add or update a machine-local source:
 
 ```bash
 mkdir -p ~/.aiocs/sources
-docs --json source upsert ~/.aiocs/sources/my-source.yaml
+aiocs --json source upsert ~/.aiocs/sources/my-source.yaml
 ```
 
 Refresh only what is needed:
 
 ```bash
-docs --json refresh due my-source
-docs --json refresh due hyperliquid
-docs --json refresh due nktkas-hyperliquid
-docs --json fetch my-source
-docs --json canary my-source
+aiocs --json refresh due my-source
+aiocs --json refresh due hyperliquid
+aiocs --json refresh due nktkas-hyperliquid
+aiocs --json fetch my-source
+aiocs --json canary my-source
 ```
 
 Heavy maintenance remains explicit:
 
 ```bash
-docs --json fetch all
-docs --json embeddings backfill all
-docs --json embeddings run
+aiocs --json fetch all
+aiocs --json embeddings backfill all
+aiocs --json embeddings run
 ```
 
 ## MCP tools
