@@ -14,7 +14,7 @@ import { processEmbeddingJobs } from './hybrid/worker.js';
 import { getAiocsConfigDir, getAiocsDataDir, getAiocsSourcesDir } from './runtime/paths.js';
 import { getBundledSourcesDir } from './runtime/bundled-sources.js';
 import { getHybridRuntimeConfig, type SearchMode } from './runtime/hybrid-config.js';
-import { scoreLearning, scoreSourceContext, type RetrievalLearning } from './retrieval.js';
+import { scoreLearning, scorePageCandidate, scoreSourceContext, type RetrievalLearning } from './retrieval.js';
 import { uniqueResolvedPaths } from './spec/source-spec-files.js';
 import { loadSourceSpec } from './spec/source-spec.js';
 import { loadSourceContextFile, type CommonLocation, type SourceContext } from './source-context.js';
@@ -53,6 +53,15 @@ function dedupePagesByIdentity<T extends { sourceId: string; snapshotId: string;
     deduped.push(row);
   }
   return deduped;
+}
+
+function pageIdentityKey(input: {
+  sourceId: string;
+  snapshotId: string;
+  pageUrl: string;
+  filePath?: string | null;
+}): string {
+  return `${input.sourceId}::${input.snapshotId}::${input.filePath ?? input.pageUrl}`;
 }
 
 type CatalogContext = {
@@ -608,6 +617,8 @@ export async function retrieveContext(query: string, options: SearchOptions & { 
     const avoidedPageKeys = new Set(
       avoidedLearnings.map((learning) => `${learning.sourceId}::${learning.filePath ?? learning.pageUrl ?? ''}`),
     );
+    const sourceHintScores = new Map<string, number>();
+    const commonLocationBoosts = new Map<string, number>();
 
     const sourceHints = sourceScope
       .map((sourceId) => {
@@ -637,6 +648,33 @@ export async function retrieveContext(query: string, options: SearchOptions & { 
       })
       .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
       .sort((left, right) => right.score - left.score || left.sourceId.localeCompare(right.sourceId));
+
+    for (const sourceHint of sourceHints) {
+      sourceHintScores.set(
+        sourceHint.sourceId,
+        Math.max(sourceHint.score, sourceHintScores.get(sourceHint.sourceId) ?? 0),
+      );
+
+      const latestSnapshotId = options.snapshot
+        ?? catalog.getSourceById(sourceHint.sourceId)?.lastSuccessfulSnapshotId
+        ?? null;
+      if (!latestSnapshotId) {
+        continue;
+      }
+
+      for (const location of sourceHint.matchedCommonLocations) {
+        const key = pageIdentityKey({
+          sourceId: sourceHint.sourceId,
+          snapshotId: latestSnapshotId,
+          pageUrl: location.url ?? '',
+          filePath: location.filePath ?? null,
+        });
+        commonLocationBoosts.set(
+          key,
+          Math.max(sourceHint.score, commonLocationBoosts.get(key) ?? 0),
+        );
+      }
+    }
 
     const search = await searchHybridCatalog({
       catalog,
@@ -674,23 +712,112 @@ export async function retrieveContext(query: string, options: SearchOptions & { 
         filePath: result.filePath,
       }));
 
-    const selectedPages = dedupePagesByIdentity([
+    const commonLocationPages = sourceHints.flatMap((sourceHint) => {
+      const snapshotId = options.snapshot
+        ?? catalog.getSourceById(sourceHint.sourceId)?.lastSuccessfulSnapshotId
+        ?? '';
+      if (!snapshotId) {
+        return [];
+      }
+
+      return sourceHint.matchedCommonLocations.map((location) => ({
+        sourceId: sourceHint.sourceId,
+        snapshotId,
+        pageUrl: location.url ?? '',
+        filePath: location.filePath ?? null,
+      }));
+    });
+
+    const pageCandidates = dedupePagesByIdentity([
+      ...commonLocationPages,
       ...learnedPages,
       ...searchedPages,
-    ]).slice(0, Math.max(1, pageLimit));
+    ]).filter((entry) => !avoidedPageKeys.has(`${entry.sourceId}::${entry.filePath ?? entry.pageUrl}`));
 
-    const pages = selectedPages.flatMap((entry) => {
+    const searchPageSignals = new Map<string, {
+      bestLexicalScore: number;
+      bestVectorScore: number;
+      sectionTitles: Set<string>;
+    }>();
+
+    for (const result of search.results) {
+      if (avoidedPageKeys.has(`${result.sourceId}::${result.filePath ?? result.pageUrl}`)) {
+        continue;
+      }
+
+      const key = pageIdentityKey({
+        sourceId: result.sourceId,
+        snapshotId: result.snapshotId,
+        pageUrl: result.pageUrl,
+        filePath: result.filePath,
+      });
+      const record = searchPageSignals.get(key) ?? {
+        bestLexicalScore: 0,
+        bestVectorScore: 0,
+        sectionTitles: new Set<string>(),
+      };
+      if (result.signals.includes('lexical')) {
+        record.bestLexicalScore = Math.max(record.bestLexicalScore, result.score);
+      }
+      if (result.signals.includes('vector')) {
+        record.bestVectorScore = Math.max(record.bestVectorScore, result.score);
+      }
+      record.sectionTitles.add(result.sectionTitle);
+      searchPageSignals.set(key, record);
+    }
+
+    const learningBoosts = new Map<string, number>();
+    for (const learning of matchedLearnings) {
+      if (!learning.pageUrl && !learning.filePath) {
+        continue;
+      }
+      const snapshotId = learning.snapshotId ?? catalog.getSourceById(learning.sourceId)?.lastSuccessfulSnapshotId ?? '';
+      if (!snapshotId) {
+        continue;
+      }
+      const key = pageIdentityKey({
+        sourceId: learning.sourceId,
+        snapshotId,
+        pageUrl: learning.pageUrl ?? '',
+        filePath: learning.filePath ?? null,
+      });
+      learningBoosts.set(key, Math.max(learning.score, learningBoosts.get(key) ?? 0));
+    }
+
+    const rankedPages = pageCandidates.flatMap((entry) => {
       try {
         const page = catalog.getPage({
           sourceId: entry.sourceId,
           snapshotId: entry.snapshotId,
           ...(entry.filePath ? { filePath: entry.filePath } : { url: entry.pageUrl }),
         });
+        const key = pageIdentityKey({
+          sourceId: page.sourceId,
+          snapshotId: page.snapshotId,
+          pageUrl: page.page.url,
+          filePath: page.page.filePath,
+        });
+        const searchSignals = searchPageSignals.get(key) ?? {
+          bestLexicalScore: 0,
+          bestVectorScore: 0,
+          sectionTitles: new Set<string>(),
+        };
+        const score = scorePageCandidate(query, {
+          pageTitle: page.page.title,
+          pageReference: page.page.filePath ?? page.page.url,
+          sectionTitles: [...searchSignals.sectionTitles],
+          bestLexicalScore: searchSignals.bestLexicalScore,
+          bestVectorScore: searchSignals.bestVectorScore,
+          learningScore: learningBoosts.get(key) ?? 0,
+          sourceHintScore: sourceHintScores.get(page.sourceId) ?? 0,
+          commonLocationScore: commonLocationBoosts.get(key) ?? 0,
+        });
 
         return [{
           sourceId: page.sourceId,
           snapshotId: page.snapshotId,
-          ...page.page,
+          score,
+          page: page.page,
         }];
       } catch (error) {
         if (
@@ -701,7 +828,18 @@ export async function retrieveContext(query: string, options: SearchOptions & { 
         }
         throw error;
       }
-    });
+    })
+      .sort((left, right) =>
+        right.score - left.score
+        || left.page.title.localeCompare(right.page.title)
+        || left.page.url.localeCompare(right.page.url))
+      .slice(0, Math.max(1, pageLimit));
+
+    const pages = rankedPages.map((entry) => ({
+      sourceId: entry.sourceId,
+      snapshotId: entry.snapshotId,
+      ...entry.page,
+    }));
 
     return {
       query,

@@ -40,6 +40,103 @@ function overlapScore(queryTokens: string[], candidate: string): number {
   return matches;
 }
 
+function uniqueTokens(tokens: string[]): string[] {
+  return [...new Set(tokens)];
+}
+
+function hasTokenCoverage(requiredTokens: string[], candidate: string): boolean {
+  if (requiredTokens.length === 0) {
+    return false;
+  }
+
+  const candidateTokens = new Set(tokenize(candidate));
+  return requiredTokens.every((token) => candidateTokens.has(token));
+}
+
+const NAVIGATIONAL_TERMS = new Set([
+  'api',
+  'apis',
+  'auth',
+  'authentication',
+  'docs',
+  'documentation',
+  'endpoint',
+  'endpoints',
+  'overview',
+  'reference',
+  'references',
+  'rest',
+  'sdk',
+  'transport',
+  'websocket',
+  'ws',
+]);
+
+export function classifyRetrievalQuery(query: string): {
+  isNavigational: boolean;
+  queryTokens: string[];
+  routingTokens: string[];
+  matchedNavigationalTerms: string[];
+} {
+  const queryTokens = uniqueTokens(tokenize(query));
+  const matchedNavigationalTerms = uniqueTokens(queryTokens.filter((token) => NAVIGATIONAL_TERMS.has(token)));
+  return {
+    isNavigational: matchedNavigationalTerms.length > 0,
+    queryTokens,
+    routingTokens: queryTokens,
+    matchedNavigationalTerms,
+  };
+}
+
+export function scorePageCandidate(query: string, input: {
+  pageTitle: string;
+  pageReference: string;
+  sectionTitles: string[];
+  bestLexicalScore: number;
+  bestVectorScore: number;
+  learningScore: number;
+  sourceHintScore: number;
+  commonLocationScore: number;
+}): number {
+  const intent = classifyRetrievalQuery(query);
+  const routingTokens = intent.routingTokens;
+  const titleOverlap = overlapScore(routingTokens, input.pageTitle);
+  const referenceOverlap = overlapScore(routingTokens, input.pageReference);
+  const sectionOverlap = Math.max(0, ...input.sectionTitles.map((sectionTitle) => overlapScore(routingTokens, sectionTitle)));
+  const exactTitleCoverage = hasTokenCoverage(routingTokens, input.pageTitle);
+  const exactReferenceCoverage = hasTokenCoverage(routingTokens, input.pageReference);
+
+  const lexicalWeight = intent.isNavigational ? 6 : 4;
+  const vectorWeight = intent.isNavigational ? 1 : 3;
+  const titleWeight = intent.isNavigational ? 8 : 4;
+  const referenceWeight = intent.isNavigational ? 6 : 3;
+  const sectionWeight = intent.isNavigational ? 4 : 2;
+  const sourceHintWeight = intent.isNavigational ? 3 : 2;
+  const commonLocationWeight = intent.isNavigational ? 7 : 4;
+  const learningWeight = intent.isNavigational ? 5 : 4;
+  const pureVectorPenalty = intent.isNavigational
+    && input.bestLexicalScore === 0
+    && titleOverlap === 0
+    && referenceOverlap === 0
+    && input.commonLocationScore === 0
+    ? 8
+    : 0;
+
+  return (
+    (input.bestLexicalScore * lexicalWeight)
+    + (input.bestVectorScore * vectorWeight)
+    + (titleOverlap * titleWeight)
+    + (referenceOverlap * referenceWeight)
+    + (sectionOverlap * sectionWeight)
+    + (input.sourceHintScore * sourceHintWeight)
+    + (input.commonLocationScore * commonLocationWeight)
+    + (input.learningScore * learningWeight)
+    + (exactTitleCoverage ? 12 : 0)
+    + (exactReferenceCoverage ? 10 : 0)
+    - pureVectorPenalty
+  );
+}
+
 export function scoreLearning(query: string, learning: RetrievalLearning): number {
   const queryTokens = tokenize(query);
   const candidates = [learning.intent, ...learning.searchTerms];
